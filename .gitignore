@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environments
+envs/
+.venv/
+venv/
+*.conda/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data & Model artifacts (generated training data, too large for git)
+data/generated/
+data/dataset/
+data/yolo_obb/
+data/test_fix/
+data/annotations/
+data/samples/
+runs/
+*.onnx
+*.pt
+*.pth
+
+# Simulation temp files
+*.log
+*.raw
+*.cir.tmp
+*.cir.out
+
+# System
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ngspice output
+spice.log

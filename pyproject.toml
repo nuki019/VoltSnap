@@ -1,0 +1,19 @@
+[project]
+name = "voltsnap"
+version = "0.1.0"
+description = "Circuit diagram recognition and SPICE simulation"
+requires-python = ">=3.11"
+dependencies = [
+    "schemdraw>=0.18",
+    "opencv-contrib-python>=4.8",
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "networkx>=3.1",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "ruff"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

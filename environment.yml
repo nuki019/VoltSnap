@@ -1,0 +1,15 @@
+name: voltsnap
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+    - schemdraw>=0.18
+    - opencv-contrib-python>=4.8
+    - numpy>=1.24
+    - matplotlib>=3.7
+    - networkx>=3.1
+    - pyyaml>=6.0
+    - pytest>=7.0
