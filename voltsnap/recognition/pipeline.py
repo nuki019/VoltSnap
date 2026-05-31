@@ -23,6 +23,7 @@ class RecognitionResult:
     detections: list[dict]
     pin_to_net: dict[str, int]
     netlist: str
+    connections: list[dict] = field(default_factory=list)
     success: bool = True
     error_message: str | None = None
 
@@ -200,7 +201,14 @@ class RecognitionPipeline:
             ))
 
         # 5. 生成网表
-        pin_to_net, netlist = self._generate_netlist(components, bound)
+        from voltsnap.vision.wire_detection import detect_wire_topology
+
+        wire_topology = detect_wire_topology(image, components, bound)
+        pin_to_net, netlist = self._generate_netlist(
+            components,
+            bound,
+            wire_topology.pin_to_net,
+        )
 
         return RecognitionResult(
             image_path=image_path,
@@ -210,6 +218,7 @@ class RecognitionPipeline:
             detections=det_dicts,
             pin_to_net=pin_to_net,
             netlist=netlist,
+            connections=wire_topology.connections,
         )
 
     def _extract_ocr_from_annotations(self, image_path: str) -> list[dict]:
@@ -257,7 +266,11 @@ class RecognitionPipeline:
         w = x2 - x1
         h = y2 - y1
 
-        angle_rad = np.radians(bound.angle)
+        angle = float(bound.angle)
+        if bound.type in {"voltage_source", "current_source", "ground"} and h >= w * 0.8:
+            angle = 90.0
+
+        angle_rad = np.radians(angle)
         cos_a = np.cos(angle_rad)
         sin_a = np.sin(angle_rad)
 
@@ -279,6 +292,7 @@ class RecognitionPipeline:
         self,
         components: list[ComponentInfo],
         bound_components: list[dict],
+        detected_pin_to_net: dict[str, int] | None = None,
     ) -> tuple[dict[str, int], str]:
         """从检测结果生成网表"""
         if not components:
@@ -289,6 +303,16 @@ class RecognitionPipeline:
         for comp in components:
             for pin in comp.pins:
                 all_pins.append(pin)
+
+        if detected_pin_to_net:
+            pin_to_net = dict(detected_pin_to_net)
+            next_net_id = max(pin_to_net.values(), default=0) + 1
+            for pin in all_pins:
+                if pin.name not in pin_to_net:
+                    pin_to_net[pin.name] = next_net_id
+                    next_net_id += 1
+            netlist = self._components_to_spice(components, pin_to_net)
+            return pin_to_net, netlist
 
         # 基于像素距离聚类
         pin_to_net: dict[str, int] = {}
@@ -331,9 +355,21 @@ class RecognitionPipeline:
 
         # 找 GND net（最常出现的 net）
         net_counts: dict[int, int] = {}
+        gnd_net = None
+        for comp in components:
+            if comp.type != "ground" and not comp.ref.upper().startswith("GND"):
+                continue
+            for pin in comp.pins:
+                if pin.name in pin_to_net:
+                    gnd_net = pin_to_net[pin.name]
+                    break
+            if gnd_net is not None:
+                break
+
         for net_id in pin_to_net.values():
             net_counts[net_id] = net_counts.get(net_id, 0) + 1
-        gnd_net = max(net_counts, key=net_counts.get) if net_counts else 0
+        if gnd_net is None:
+            gnd_net = max(net_counts, key=net_counts.get) if net_counts else 0
 
         def _node(pin_name: str) -> str:
             net_id = pin_to_net.get(pin_name, 0)

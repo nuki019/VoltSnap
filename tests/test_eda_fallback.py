@@ -274,6 +274,27 @@ class TestPipelineFallbackIntegration:
         # 网表不应为空
         assert result.netlist, "Netlist is empty"
 
+    def test_pipeline_infers_wire_connections(self, tmp_path):
+        from voltsnap.recognition.pipeline import RecognitionPipeline
+
+        image = _create_synthetic_eda_image()
+        image_path = tmp_path / "wire_topology.png"
+        cv2.imwrite(str(image_path), image)
+
+        pipeline = RecognitionPipeline(use_gpu=False)
+        result = pipeline.process(image_path)
+
+        assert result.success, f"Pipeline failed: {result.error_message}"
+        assert result.connections, "Expected visible EDA wires to produce connections"
+        assert result.pin_to_net["V1_pin1"] == result.pin_to_net["R1_pin1"]
+        assert result.pin_to_net["R1_pin2"] == result.pin_to_net["R2_pin1"]
+        assert result.pin_to_net["R2_pin2"] == result.pin_to_net["R3_pin1"]
+        assert result.pin_to_net["V1_pin2"] == result.pin_to_net["GND_pin1"]
+        assert result.pin_to_net["R3_pin2"] == result.pin_to_net["GND_pin1"]
+
+        pairs = {(c["start_ref"], c["end_ref"]) for c in result.connections}
+        assert {("V1", "R1"), ("R1", "R2"), ("R3", "R2")} <= pairs
+
     def test_pipeline_with_chinese_path(self, tmp_path):
         """Pipeline 应处理中文路径"""
         from voltsnap.recognition.pipeline import RecognitionPipeline

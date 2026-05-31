@@ -197,8 +197,15 @@ class ComponentItem(QGraphicsItem):
         return super().itemChange(change, value)
 
     def pin_scene_pos(self, pin: str = "right") -> QPointF:
-        x = -COMP_W / 2 if pin == "left" else COMP_W / 2
-        return self.mapToScene(QPointF(x, 0))
+        if pin == "left":
+            point = QPointF(-COMP_W / 2, 0)
+        elif pin == "top":
+            point = QPointF(0, -COMP_H / 2)
+        elif pin == "bottom":
+            point = QPointF(0, COMP_H / 2)
+        else:
+            point = QPointF(COMP_W / 2, 0)
+        return self.mapToScene(point)
 
 
 class WireItem(QGraphicsPathItem):
@@ -598,7 +605,7 @@ class SchematicEditor(QWidget):
 
     # ── 数据加载 ──────────────────────────────────────────────────────
 
-    def load_components(self, components: list[dict]):
+    def load_components(self, components: list[dict], connections: list[dict] | None = None):
         """加载元件并重新渲染原理图"""
         self.scene.clear()
         self._comp_items.clear()
@@ -652,14 +659,17 @@ class SchematicEditor(QWidget):
                 self._comp_items[ref] = item
 
         # 适配视图
-        self.auto_generate_wires()
+        if connections:
+            self.load_connections(connections)
+        else:
+            self.auto_generate_wires()
         self.view.fitInView(self.scene.sceneRect().adjusted(-40, -40, 40, 40),
                             Qt.AspectRatioMode.KeepAspectRatio)
         self.title_label.setText(f"原理图 — {len(components)} 个元件")
 
-    def reload_components(self, components: list[dict]):
+    def reload_components(self, components: list[dict], connections: list[dict] | None = None):
         """重新加载元件列表（别名）"""
-        self.load_components(components)
+        self.load_components(components, connections=connections)
 
     def get_components(self) -> list[dict]:
         """获取当前元件列表"""
@@ -746,6 +756,20 @@ class SchematicEditor(QWidget):
         self._wire_items.clear()
         self._selected_wire = None
 
+    def load_connections(self, connections: list[dict]):
+        self.clear_wires()
+        for conn in connections:
+            start_ref = conn.get("start_ref")
+            end_ref = conn.get("end_ref")
+            if not start_ref or not end_ref:
+                continue
+            self.add_wire_between_refs(
+                str(start_ref),
+                str(end_ref),
+                str(conn.get("start_pin", "right")),
+                str(conn.get("end_pin", "left")),
+            )
+
     def auto_generate_wires(self):
         self.clear_wires()
         refs = list(self._comp_items.keys())
@@ -789,8 +813,18 @@ class SchematicEditor(QWidget):
         if start_ref not in self._comp_items or end_ref not in self._comp_items:
             return None
         for wire in self._wire_items:
-            same_direction = wire.start_ref == start_ref and wire.end_ref == end_ref
-            reverse_direction = wire.start_ref == end_ref and wire.end_ref == start_ref
+            same_direction = (
+                wire.start_ref == start_ref
+                and wire.end_ref == end_ref
+                and wire.start_pin == start_pin
+                and wire.end_pin == end_pin
+            )
+            reverse_direction = (
+                wire.start_ref == end_ref
+                and wire.end_ref == start_ref
+                and wire.start_pin == end_pin
+                and wire.end_pin == start_pin
+            )
             if same_direction or reverse_direction:
                 return wire
 

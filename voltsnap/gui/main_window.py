@@ -303,7 +303,10 @@ class MainWindow(QMainWindow):
         self.circuit_panel.load_components(result.bound_components)
 
         # 更新原理图编辑器
-        self.schematic_editor.load_components(result.bound_components)
+        self.schematic_editor.load_components(
+            result.bound_components,
+            connections=getattr(result, "connections", []),
+        )
 
         # 更新仿真面板（网表）
         self.simulation_panel.set_netlist(result.netlist)
@@ -420,6 +423,7 @@ class MainWindow(QMainWindow):
                 "detections": result.detections,
                 "ocr_results": result.ocr_results,
                 "pin_to_net": {k: v for k, v in result.pin_to_net.items()},
+                "connections": getattr(result, "connections", []),
                 "netlist": result.netlist,
             }
             with open(path, "w", encoding="utf-8") as f:

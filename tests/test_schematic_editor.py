@@ -188,6 +188,46 @@ class TestSchematicEditorWires:
         editor.load_components(_sample_components())
         assert len(editor._wire_items) > 0
 
+    def test_load_components_uses_detected_connections(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+
+        editor = SchematicEditor()
+        editor.load_components(
+            _sample_components(),
+            connections=[
+                {
+                    "start_ref": "V1",
+                    "end_ref": "R1",
+                    "start_pin": "top",
+                    "end_pin": "left",
+                },
+                {
+                    "start_ref": "R1",
+                    "end_ref": "R2",
+                    "start_pin": "right",
+                    "end_pin": "left",
+                },
+            ],
+        )
+
+        assert len(editor._wire_items) == 2
+        assert {(w.start_ref, w.end_ref, w.start_pin, w.end_pin) for w in editor._wire_items} == {
+            ("V1", "R1", "top", "left"),
+            ("R1", "R2", "right", "left"),
+        }
+
+    def test_parallel_wires_between_same_components_keep_pin_sides(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        editor.clear_wires()
+
+        assert editor.add_wire_between_refs("V1", "R1", "top", "left") is not None
+        assert editor.add_wire_between_refs("V1", "R1", "bottom", "right") is not None
+
+        assert len(editor._wire_items) == 2
+
     def test_add_select_delete_wire(self, qapp):
         from voltsnap.gui.schematic_editor import SchematicEditor
 
