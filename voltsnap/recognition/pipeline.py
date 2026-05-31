@@ -5,10 +5,10 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import cv2
 import numpy as np
 
 from voltsnap.models import ComponentInfo, PinInfo
+from voltsnap.utils import imread_unicode
 
 logger = logging.getLogger("voltsnap.recognition.pipeline")
 
@@ -102,7 +102,7 @@ class RecognitionPipeline:
                 error_message=f"Image not found: {image_path}",
             )
 
-        image = cv2.imread(str(image_path))
+        image = imread_unicode(image_path)
         if image is None:
             return RecognitionResult(
                 image_path=str(image_path),
@@ -163,6 +163,28 @@ class RecognitionPipeline:
             det_dicts,
             [vars(r) for r in parsed_ocr],
         )
+
+        # 3.5. EDA 截图 fallback：当 YOLO+OCR 未能绑定任何元件编号时
+        has_ref = any(b.ref for b in bound)
+        if not has_ref:
+            logger.info("No refs bound from YOLO/OCR, trying EDA screenshot fallback")
+            from voltsnap.recognition.eda_fallback import detect_eda_components
+            eda_bound = detect_eda_components(image)
+            if eda_bound:
+                bound = eda_bound
+                # 为 UI 画框生成 detections
+                det_dicts = [
+                    {
+                        "ref": b.ref,
+                        "class_name": b.type,
+                        "class_id": -1,
+                        "bbox": b.bbox,
+                        "center": b.center,
+                        "confidence": b.confidence,
+                        "angle": b.angle,
+                    }
+                    for b in bound
+                ]
 
         # 4. 转换为 ComponentInfo
         components = []

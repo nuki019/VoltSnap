@@ -5,10 +5,10 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-import cv2
 import numpy as np
 
 from voltsnap.recognition.annotation_converter import COMPONENT_CLASSES
+from voltsnap.utils import imread_unicode
 
 logger = logging.getLogger("voltsnap.recognition.detector")
 
@@ -154,7 +154,7 @@ class ComponentDetector:
         conf_threshold: float = 0.25,
     ) -> list[Detection]:
         """从文件路径加载图像并检测"""
-        image = cv2.imread(str(image_path))
+        image = imread_unicode(image_path)
         if image is None:
             raise FileNotFoundError(f"Image not found: {image_path}")
         return self.detect(image, conf_threshold)

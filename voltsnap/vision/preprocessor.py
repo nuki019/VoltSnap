@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from voltsnap.models import PreprocessResult
+from voltsnap.utils import imread_unicode
 
 logger = logging.getLogger("voltsnap.vision.preprocessor")
 
@@ -24,7 +25,7 @@ class ImagePreprocessor:
 
     def process(self, image_path: str) -> PreprocessResult:
         """从文件路径读取并处理"""
-        img = cv2.imread(image_path)
+        img = imread_unicode(image_path)
         if img is None:
             raise FileNotFoundError(f"Cannot read image: {image_path}")
         return self._process_array(img)
