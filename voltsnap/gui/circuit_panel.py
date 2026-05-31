@@ -90,7 +90,7 @@ class ComponentTableModel(QAbstractTableModel):
 
     def flags(self, index):
         flags = super().flags(index)
-        if index.column() in (0, 2):  # 编号和参数值可编辑
+        if index.column() in (0, 1, 2):  # 编号、类型和参数值可编辑
             flags |= Qt.ItemFlag.ItemIsEditable
         return flags
 
@@ -105,6 +105,14 @@ class ComponentTableModel(QAbstractTableModel):
                     return False
                 self._data[row]["ref"] = value
                 updates = {"ref": value}
+            elif col == 1:
+                value = str(value).strip()
+                if not value:
+                    return False
+                inverse_display = {v: k for k, v in self.TYPE_DISPLAY.items()}
+                value = inverse_display.get(value, value)
+                self._data[row]["type"] = value
+                updates = {"type": value}
             elif col == 2:
                 value = str(value)
                 self._data[row]["value"] = value
@@ -125,6 +133,18 @@ class ComponentTableModel(QAbstractTableModel):
     def get_components(self) -> list[dict]:
         """获取当前元件列表"""
         return list(self._data)
+
+    def update_component(self, old_ref: str, updates: dict) -> bool:
+        """Update a row from an external editor without re-emitting component_changed."""
+        for row, comp in enumerate(self._data):
+            if comp.get("ref") != old_ref:
+                continue
+            comp.update(updates)
+            top_left = self.index(row, 0)
+            bottom_right = self.index(row, self.columnCount() - 1)
+            self.dataChanged.emit(top_left, bottom_right)
+            return True
+        return False
 
 
 class CircuitPanel(QWidget):
@@ -220,6 +240,10 @@ class CircuitPanel(QWidget):
     def get_components(self) -> list[dict]:
         """获取当前元件列表"""
         return self.table_model.get_components()
+
+    def update_component(self, old_ref: str, updates: dict) -> bool:
+        """从原理图编辑器同步元件改动到表格。"""
+        return self.table_model.update_component(old_ref, updates)
 
     def _on_add_component(self):
         """添加元件"""

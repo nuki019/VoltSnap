@@ -178,6 +178,76 @@ class TestSchematicEditorRefresh:
         assert flags & QGraphicsItem.GraphicsItemFlag.ItemIsMovable
 
 
+# ── 导线和画布编辑 ──────────────────────────────────────────────────────────
+
+class TestSchematicEditorWires:
+    def test_load_components_auto_generates_wires(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        assert len(editor._wire_items) > 0
+
+    def test_add_select_delete_wire(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        editor.clear_wires()
+        wire = editor.add_wire_between_refs("V1", "R1")
+        assert wire is not None
+        assert wire in editor._wire_items
+
+        editor.select_wire(wire)
+        assert editor._selected_wire is wire
+        assert wire._selected is True
+        assert editor.delete_selected_wire() is True
+        assert wire not in editor._wire_items
+        assert editor._selected_wire is None
+
+    def test_wire_updates_when_component_moves(self, qapp):
+        from PyQt6.QtCore import QPointF
+        from voltsnap.gui.schematic_editor import SchematicEditor
+
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        editor.clear_wires()
+        wire = editor.add_wire_between_refs("V1", "R1")
+        before = wire.path().boundingRect()
+        editor._comp_items["R1"].setPos(editor._comp_items["R1"].pos() + QPointF(120, 0))
+        after = wire.path().boundingRect()
+        assert after != before
+
+    def test_refresh_ref_updates_wire_endpoints(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        editor.clear_wires()
+        wire = editor.add_wire_between_refs("V1", "R1")
+        editor.refresh_component("R1", {"ref": "R10"})
+        assert wire in editor._wire_items
+        assert wire.end_ref == "R10"
+
+    def test_canvas_component_update_emits_and_refreshes(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        received = []
+        editor.component_changed.connect(lambda old_ref, updates: received.append((old_ref, updates)))
+
+        assert editor.update_component_from_canvas(
+            "R1",
+            {"ref": "R10", "type": "capacitor", "value": "22uF"},
+        )
+        assert "R10" in editor._comp_items
+        assert "R1" not in editor._comp_items
+        assert editor._comp_items["R10"].comp_type == "capacitor"
+        assert editor._comp_items["R10"].value == "22uF"
+        assert received == [("R1", {"ref": "R10", "type": "capacitor", "value": "22uF"})]
+
+
 # ── 仿真叠加 ──────────────────────────────────────────────────────────────
 
 class _FakeSimResult:

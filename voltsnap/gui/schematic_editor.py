@@ -8,6 +8,7 @@ from PyQt6.QtGui import (
     QFont,
     QPainter,
     QPainterPath,
+    QPainterPathStroker,
     QPen,
     QPolygonF,
 )
@@ -21,7 +22,10 @@ from PyQt6.QtWidgets import (
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
+    QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -30,6 +34,7 @@ from PyQt6.QtWidgets import (
 
 _GRID_PEN = QPen(QColor(60, 60, 60), 0.5)
 _WIRE_PEN = QPen(QColor(200, 200, 200), 1.5)
+_WIRE_SELECTED_PEN = QPen(QColor(0, 200, 255), 3)
 _SYMBOL_PEN = QPen(QColor(220, 220, 220), 2)
 _FILL_BRUSH = QBrush(QColor(40, 40, 40))
 
@@ -57,13 +62,15 @@ class ComponentItem(QGraphicsItem):
     右侧引脚线从体右端到 (COMP_W/2, 0)。
     """
 
-    def __init__(self, comp: dict, on_click=None):
+    def __init__(self, comp: dict, on_click=None, on_moved=None, on_edit=None):
         super().__init__()
         self.comp = comp
         self.ref = comp.get("ref", "")
         self.comp_type = comp.get("type", "unknown")
         self.value = comp.get("value", "")
         self._on_click = on_click
+        self._on_moved = on_moved
+        self._on_edit = on_edit
         self._selected = False
         self._sim_texts: list[QGraphicsSimpleTextItem] = []
 
@@ -174,6 +181,70 @@ class ComponentItem(QGraphicsItem):
     def mousePressEvent(self, event):
         if self._on_click:
             self._on_click(self.ref)
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if self._on_edit:
+            self._on_edit(self.ref)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
+            if self._on_moved:
+                self._on_moved(self.ref)
+        return super().itemChange(change, value)
+
+    def pin_scene_pos(self, pin: str = "right") -> QPointF:
+        x = -COMP_W / 2 if pin == "left" else COMP_W / 2
+        return self.mapToScene(QPointF(x, 0))
+
+
+class WireItem(QGraphicsPathItem):
+    """Editable wire between two component pins."""
+
+    def __init__(
+        self,
+        start_ref: str,
+        end_ref: str,
+        start_pin: str = "right",
+        end_pin: str = "left",
+        on_click=None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.start_ref = start_ref
+        self.end_ref = end_ref
+        self.start_pin = start_pin
+        self.end_pin = end_pin
+        self._on_click = on_click
+        self._selected = False
+        self.setPen(_WIRE_PEN)
+        self.setZValue(-10)
+        self.setAcceptHoverEvents(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def set_selected(self, selected: bool):
+        self._selected = selected
+        self.setPen(_WIRE_SELECTED_PEN if selected else _WIRE_PEN)
+
+    def update_path(self, start: QPointF, end: QPointF):
+        path = QPainterPath(start)
+        mid_x = (start.x() + end.x()) / 2
+        path.lineTo(mid_x, start.y())
+        path.lineTo(mid_x, end.y())
+        path.lineTo(end)
+        self.setPath(path)
+
+    def shape(self):
+        stroker = QPainterPathStroker()
+        stroker.setWidth(10)
+        return stroker.createStroke(self.path())
+
+    def mousePressEvent(self, event):
+        if self._on_click:
+            self._on_click(self)
         super().mousePressEvent(event)
 
 
@@ -472,6 +543,7 @@ class SchematicEditor(QWidget):
     """
 
     component_selected = pyqtSignal(object)  # str | None
+    component_changed = pyqtSignal(str, dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -483,6 +555,25 @@ class SchematicEditor(QWidget):
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label.setStyleSheet("font-weight: bold; padding: 4px;")
         layout.addWidget(self.title_label)
+
+        controls = QHBoxLayout()
+        self.btn_auto_wires = QPushButton("自动导线")
+        self.btn_auto_wires.clicked.connect(self.auto_generate_wires)
+        controls.addWidget(self.btn_auto_wires)
+
+        self.btn_add_wire = QPushButton("添加导线")
+        self.btn_add_wire.clicked.connect(self._start_wire_from_selection)
+        controls.addWidget(self.btn_add_wire)
+
+        self.btn_edit_component = QPushButton("编辑元件")
+        self.btn_edit_component.clicked.connect(self._edit_selected_component)
+        controls.addWidget(self.btn_edit_component)
+
+        self.btn_delete_wire = QPushButton("删除导线")
+        self.btn_delete_wire.clicked.connect(self.delete_selected_wire)
+        controls.addWidget(self.btn_delete_wire)
+        controls.addStretch()
+        layout.addLayout(controls)
 
         self.scene = QGraphicsScene()
         self.view = QGraphicsView(self.scene)
@@ -500,6 +591,10 @@ class SchematicEditor(QWidget):
         self._selected_ref: str | None = None
         self._components: list[dict] = []
         self._overlay_items: list[QGraphicsItem] = []
+        self._wire_items: list[WireItem] = []
+        self._selected_wire: WireItem | None = None
+        self._pending_wire_ref: str | None = None
+        self._suspend_wire_updates = False
 
     # ── 数据加载 ──────────────────────────────────────────────────────
 
@@ -508,7 +603,10 @@ class SchematicEditor(QWidget):
         self.scene.clear()
         self._comp_items.clear()
         self._overlay_items.clear()
+        self._wire_items.clear()
+        self._selected_wire = None
         self._selected_ref = None
+        self._pending_wire_ref = None
         self._components = [dict(c) for c in components]
 
         if not components:
@@ -541,7 +639,12 @@ class SchematicEditor(QWidget):
             sx = (center[0] - avg_x) * scale
             sy = (center[1] - avg_y) * scale
 
-            item = ComponentItem(comp, on_click=self._on_component_clicked)
+            item = ComponentItem(
+                comp,
+                on_click=self._on_component_clicked,
+                on_moved=self._on_component_moved,
+                on_edit=self._edit_component_dialog,
+            )
             item.setPos(sx, sy)
             self.scene.addItem(item)
             ref = comp.get("ref", "")
@@ -549,6 +652,7 @@ class SchematicEditor(QWidget):
                 self._comp_items[ref] = item
 
         # 适配视图
+        self.auto_generate_wires()
         self.view.fitInView(self.scene.sceneRect().adjusted(-40, -40, 40, 40),
                             Qt.AspectRatioMode.KeepAspectRatio)
         self.title_label.setText(f"原理图 — {len(components)} 个元件")
@@ -582,15 +686,34 @@ class SchematicEditor(QWidget):
         # 移除旧项，创建新项
         pos = item.pos()
         self.scene.removeItem(item)
-        new_item = ComponentItem(new_comp_data, on_click=self._on_component_clicked)
-        new_item.setPos(pos)
-        self.scene.addItem(new_item)
-        self._comp_items[new_ref] = new_item
+        self._suspend_wire_updates = True
+        try:
+            new_item = ComponentItem(
+                new_comp_data,
+                on_click=self._on_component_clicked,
+                on_moved=self._on_component_moved,
+                on_edit=self._edit_component_dialog,
+            )
+            new_item.setPos(pos)
+            self.scene.addItem(new_item)
+            self._comp_items[new_ref] = new_item
+        finally:
+            self._suspend_wire_updates = False
+
+        if new_ref != ref:
+            for wire in self._wire_items:
+                if wire.start_ref == ref:
+                    wire.start_ref = new_ref
+                if wire.end_ref == ref:
+                    wire.end_ref = new_ref
+            if self._pending_wire_ref == ref:
+                self._pending_wire_ref = new_ref
 
         # 恢复选中状态
         if self._selected_ref == ref:
             self._selected_ref = new_ref
             new_item.set_selected(True)
+        self.update_wires()
 
     # ── 选择联动 ──────────────────────────────────────────────────────
 
@@ -607,8 +730,182 @@ class SchematicEditor(QWidget):
 
     def _on_component_clicked(self, ref: str):
         """元件被点击"""
+        if self._pending_wire_ref and self._pending_wire_ref != ref:
+            self.add_wire_between_refs(self._pending_wire_ref, ref)
+            self._pending_wire_ref = None
         self.select_component(ref)
         self.component_selected.emit(ref)
+
+    # ── 导线编辑 ──────────────────────────────────────────────────────
+
+    def clear_wires(self):
+        for wire in self._wire_items:
+            scene = wire.scene()
+            if scene:
+                scene.removeItem(wire)
+        self._wire_items.clear()
+        self._selected_wire = None
+
+    def auto_generate_wires(self):
+        self.clear_wires()
+        refs = list(self._comp_items.keys())
+        if len(refs) < 2:
+            return
+
+        pairs: set[tuple[str, str]] = set()
+        for ref, item in self._comp_items.items():
+            pos = item.pos()
+            candidates = []
+            for other_ref, other in self._comp_items.items():
+                if other_ref == ref:
+                    continue
+                other_pos = other.pos()
+                dx = other_pos.x() - pos.x()
+                dy = other_pos.y() - pos.y()
+                if dx > 20:
+                    candidates.append((dx + abs(dy) * 1.6, ref, other_ref))
+                if dy > 20:
+                    candidates.append((dy + abs(dx) * 1.6, ref, other_ref))
+            if candidates:
+                _, start_ref, end_ref = min(candidates, key=lambda x: x[0])
+                pairs.add((start_ref, end_ref))
+
+        if not pairs:
+            ordered = sorted(refs, key=lambda r: (self._comp_items[r].pos().y(), self._comp_items[r].pos().x()))
+            pairs.update(zip(ordered, ordered[1:]))
+
+        for start_ref, end_ref in sorted(pairs):
+            self.add_wire_between_refs(start_ref, end_ref)
+
+    def add_wire_between_refs(
+        self,
+        start_ref: str,
+        end_ref: str,
+        start_pin: str = "right",
+        end_pin: str = "left",
+    ) -> WireItem | None:
+        if start_ref == end_ref:
+            return None
+        if start_ref not in self._comp_items or end_ref not in self._comp_items:
+            return None
+        for wire in self._wire_items:
+            same_direction = wire.start_ref == start_ref and wire.end_ref == end_ref
+            reverse_direction = wire.start_ref == end_ref and wire.end_ref == start_ref
+            if same_direction or reverse_direction:
+                return wire
+
+        wire = WireItem(start_ref, end_ref, start_pin, end_pin, on_click=self._on_wire_clicked)
+        self.scene.addItem(wire)
+        self._wire_items.append(wire)
+        self.update_wire(wire)
+        return wire
+
+    def update_wire(self, wire: WireItem):
+        start_item = self._comp_items.get(wire.start_ref)
+        end_item = self._comp_items.get(wire.end_ref)
+        if not start_item or not end_item:
+            return
+        start = start_item.pin_scene_pos(wire.start_pin)
+        end = end_item.pin_scene_pos(wire.end_pin)
+        wire.update_path(start, end)
+
+    def update_wires(self):
+        for wire in list(self._wire_items):
+            if wire.start_ref not in self._comp_items or wire.end_ref not in self._comp_items:
+                scene = wire.scene()
+                if scene:
+                    scene.removeItem(wire)
+                self._wire_items.remove(wire)
+                continue
+            self.update_wire(wire)
+
+    def _on_wire_clicked(self, wire: WireItem):
+        self.select_wire(wire)
+
+    def select_wire(self, wire: WireItem | None):
+        if self._selected_wire and self._selected_wire in self._wire_items:
+            self._selected_wire.set_selected(False)
+        self._selected_wire = wire if wire in self._wire_items else None
+        if self._selected_wire:
+            self._selected_wire.set_selected(True)
+            self.select_component(None)
+
+    def delete_selected_wire(self) -> bool:
+        wire = self._selected_wire
+        if not wire:
+            return False
+        scene = wire.scene()
+        if scene:
+            scene.removeItem(wire)
+        if wire in self._wire_items:
+            self._wire_items.remove(wire)
+        self._selected_wire = None
+        return True
+
+    def _start_wire_from_selection(self):
+        self._pending_wire_ref = self._selected_ref
+
+    def _on_component_moved(self, ref: str):
+        if self._suspend_wire_updates:
+            return
+        self.update_wires()
+
+    # ── 元件编辑 ──────────────────────────────────────────────────────
+
+    def update_component_from_canvas(self, ref: str, updates: dict) -> bool:
+        if ref not in self._comp_items:
+            return False
+        updates = {k: v for k, v in updates.items() if k in {"ref", "type", "value"}}
+        if not updates:
+            return False
+        new_ref = str(updates.get("ref", ref)).strip()
+        if not new_ref:
+            return False
+        if new_ref != ref and new_ref in self._comp_items:
+            return False
+        updates["ref"] = new_ref
+        self.refresh_component(ref, updates)
+        self.component_changed.emit(ref, updates)
+        return True
+
+    def _edit_selected_component(self):
+        if self._selected_ref:
+            self._edit_component_dialog(self._selected_ref)
+
+    def _edit_component_dialog(self, ref: str):
+        item = self._comp_items.get(ref)
+        if not item:
+            return
+
+        new_ref, ok = QInputDialog.getText(self, "编辑元件", "编号", text=item.ref)
+        if not ok:
+            return
+        new_ref = new_ref.strip()
+        if not new_ref:
+            return
+
+        type_choices = sorted(set(_SYMBOL_BUILDERS.keys()) | {"unknown"})
+        current_type = item.comp_type if item.comp_type in type_choices else "unknown"
+        type_index = type_choices.index(current_type)
+        new_type, ok = QInputDialog.getItem(
+            self,
+            "编辑元件",
+            "类型",
+            type_choices,
+            type_index,
+            False,
+        )
+        if not ok:
+            return
+
+        new_value, ok = QInputDialog.getText(self, "编辑元件", "数值", text=item.value)
+        if not ok:
+            return
+
+        self.update_component_from_canvas(
+            ref,
+            {"ref": new_ref, "type": str(new_type), "value": str(new_value)},
+        )
 
     # ── 仿真结果叠加 ──────────────────────────────────────────────────
 

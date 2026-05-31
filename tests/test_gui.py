@@ -130,6 +130,19 @@ class TestComponentTableModel:
         for t in ["ground", "switch", "led", "npn_transistor", "pnp_transistor", "nmos", "pmos"]:
             assert t in ComponentTableModel.TYPE_DISPLAY, f"{t} missing from TYPE_DISPLAY"
 
+    def test_type_column_is_editable(self, qapp):
+        from PyQt6.QtCore import Qt
+        from voltsnap.gui.circuit_panel import ComponentTableModel
+
+        model = ComponentTableModel()
+        model.load_data([
+            {"ref": "R1", "type": "resistor", "value": "1k", "confidence": 0.9, "center": (0, 0)},
+        ])
+        idx = model.index(0, 1)
+        assert model.flags(idx) & Qt.ItemFlag.ItemIsEditable
+        assert model.setData(idx, "capacitor")
+        assert model.get_components()[0]["type"] == "capacitor"
+
 
 class TestExportSimulationJson:
     """仿真结果 JSON 导出测试"""
@@ -260,6 +273,26 @@ class TestSelectionSync:
         assert "R10" in window.schematic_editor._comp_items
         assert "R1" not in window.schematic_editor._comp_items
         assert window.schematic_editor._selected_ref == "R10"
+
+    def test_table_edit_refreshes_schematic_type(self, qapp):
+        window = self._make_window_with_data(qapp)
+        model = window.circuit_panel.table_model
+        idx = model.index(1, 1)
+        assert model.setData(idx, "capacitor")
+        assert window.schematic_editor._comp_items["R1"].comp_type == "capacitor"
+
+    def test_schematic_edit_updates_table(self, qapp):
+        window = self._make_window_with_data(qapp)
+        assert window.schematic_editor.update_component_from_canvas(
+            "R1",
+            {"ref": "C10", "type": "capacitor", "value": "22uF"},
+        )
+
+        comps = window.circuit_panel.get_components()
+        comp = next(c for c in comps if c.get("ref") == "C10")
+        assert comp["type"] == "capacitor"
+        assert comp["value"] == "22uF"
+        assert window.schematic_editor._selected_ref == "C10"
 
     def test_status_bar_shows_component_info(self, qapp):
         """状态栏应显示所选元件信息"""

@@ -59,6 +59,7 @@ class MainWindow(QMainWindow):
         self._sim_worker: SimulationWorker | None = None
         self._last_recognition_result = None
         self._last_simulation_result: SimulationResult | None = None
+        self._syncing_component_change = False
 
         # 初始化 UI
         self._init_panels()
@@ -191,6 +192,7 @@ class MainWindow(QMainWindow):
         self.circuit_panel.component_selected.connect(self._on_table_component_selected)
         self.circuit_panel.component_changed.connect(self._on_table_component_changed)
         self.schematic_editor.component_selected.connect(self._on_schematic_component_selected)
+        self.schematic_editor.component_changed.connect(self._on_schematic_component_changed)
 
     # ── 事件处理 ──────────────────────────────────────────────────────
 
@@ -213,10 +215,29 @@ class MainWindow(QMainWindow):
         self._update_status_for_component(ref)
 
     def _on_table_component_changed(self, old_ref: str, updates: dict):
-        self.schematic_editor.refresh_component(old_ref, updates)
-        new_ref = updates.get("ref", old_ref)
-        if self.schematic_editor._selected_ref == new_ref:
+        if self._syncing_component_change:
+            return
+        self._syncing_component_change = True
+        try:
+            self.schematic_editor.refresh_component(old_ref, updates)
+            new_ref = updates.get("ref", old_ref)
+            if self.schematic_editor._selected_ref == new_ref:
+                self._update_status_for_component(new_ref)
+        finally:
+            self._syncing_component_change = False
+
+    def _on_schematic_component_changed(self, old_ref: str, updates: dict):
+        if self._syncing_component_change:
+            return
+        self._syncing_component_change = True
+        try:
+            self.circuit_panel.update_component(old_ref, updates)
+            new_ref = updates.get("ref", old_ref)
+            self.circuit_panel.select_component(new_ref)
+            self.image_panel.select_component(new_ref)
             self._update_status_for_component(new_ref)
+        finally:
+            self._syncing_component_change = False
 
     def _update_status_for_component(self, ref: str | None):
         """状态栏显示所选元件信息"""
