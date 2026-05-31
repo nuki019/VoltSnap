@@ -21,6 +21,8 @@ class ComponentTableModel(QAbstractTableModel):
 
     HEADERS = ["编号", "类型", "参数值", "置信度", "中心位置"]
 
+    component_changed = pyqtSignal(str, dict)
+
     TYPE_DISPLAY = {
         "resistor": "电阻",
         "capacitor": "电容",
@@ -96,11 +98,21 @@ class ComponentTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.EditRole and index.isValid():
             row = index.row()
             col = index.column()
+            old_ref = self._data[row].get("ref", "")
             if col == 0:
+                value = str(value).strip()
+                if not value:
+                    return False
                 self._data[row]["ref"] = value
+                updates = {"ref": value}
             elif col == 2:
+                value = str(value)
                 self._data[row]["value"] = value
+                updates = {"value": value}
+            else:
+                return False
             self.dataChanged.emit(index, index)
+            self.component_changed.emit(old_ref, updates)
             return True
         return False
 
@@ -125,6 +137,8 @@ class CircuitPanel(QWidget):
     # 表格选中行时发射元件 ref（None 表示取消选中）
     component_selected = pyqtSignal(object)  # str | None
 
+    component_changed = pyqtSignal(str, dict)
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -142,6 +156,7 @@ class CircuitPanel(QWidget):
         group_layout = QVBoxLayout(group)
 
         self.table_model = ComponentTableModel()
+        self.table_model.component_changed.connect(self.component_changed)
         self.table_view = QTableView()
         self.table_view.setModel(self.table_model)
         self.table_view.horizontalHeader().setSectionResizeMode(

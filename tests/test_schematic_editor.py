@@ -1,0 +1,262 @@
+"""SchematicEditor 测试（offscreen 模式）"""
+import sys
+
+import pytest
+
+from PyQt6.QtWidgets import QApplication
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+    return app
+
+
+# ── 测试数据 ──────────────────────────────────────────────────────────────
+
+def _sample_components():
+    """返回一份新的测试元件列表（避免测试间共享可变状态）"""
+    return [
+        {"ref": "V1", "type": "voltage_source", "value": "5V", "confidence": 0.95, "center": (50, 100)},
+        {"ref": "R1", "type": "resistor", "value": "1k", "confidence": 0.90, "center": (200, 100)},
+        {"ref": "R2", "type": "resistor", "value": "2k", "confidence": 0.85, "center": (350, 100)},
+        {"ref": "C1", "type": "capacitor", "value": "10uF", "confidence": 0.80, "center": (200, 250)},
+        {"ref": "L1", "type": "inductor", "value": "10mH", "confidence": 0.75, "center": (350, 250)},
+        {"ref": "D1", "type": "diode", "value": "1N4148", "confidence": 0.70, "center": (500, 100)},
+        {"ref": "GND", "type": "ground", "value": "", "confidence": 0.99, "center": (500, 250)},
+    ]
+
+
+# ── 基础功能 ──────────────────────────────────────────────────────────────
+
+class TestSchematicEditorCreation:
+    def test_widget_creation(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        assert editor.scene is not None
+        assert editor.view is not None
+        assert editor.title_label is not None
+
+    def test_empty_load(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        editor.load_components([])
+        assert len(editor._comp_items) == 0
+        assert "无元件" in editor.title_label.text()
+
+
+class TestSchematicEditorLoadComponents:
+    def test_load_creates_items(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        comps = _sample_components()
+        editor.load_components(comps)
+        assert len(editor._comp_items) == len(comps)
+
+    def test_all_refs_present(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        comps = _sample_components()
+        editor.load_components(comps)
+        for comp in comps:
+            assert comp["ref"] in editor._comp_items
+
+    def test_reload_clears_old(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        comps = _sample_components()
+        editor.load_components(comps)
+        editor.load_components([comps[0]])
+        assert len(editor._comp_items) == 1
+        assert "V1" in editor._comp_items
+
+    def test_get_components(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        comps = _sample_components()
+        editor.load_components(comps)
+        result = editor.get_components()
+        assert len(result) == len(comps)
+
+    def test_reload_components_alias(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        comps = _sample_components()
+        editor.reload_components(comps)
+        assert len(editor._comp_items) == len(comps)
+
+    def test_title_shows_count(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        comps = _sample_components()
+        editor.load_components(comps)
+        assert str(len(comps)) in editor.title_label.text()
+
+
+# ── 选择功能 ──────────────────────────────────────────────────────────────
+
+class TestSchematicEditorSelection:
+    def test_select_component_highlights(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        editor.select_component("R1")
+        assert editor._selected_ref == "R1"
+        assert editor._comp_items["R1"]._selected is True
+
+    def test_select_none_clears(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        editor.select_component("R1")
+        editor.select_component(None)
+        assert editor._selected_ref is None
+
+    def test_select_switches_highlight(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        editor.select_component("R1")
+        editor.select_component("R2")
+        assert editor._comp_items["R1"]._selected is False
+        assert editor._comp_items["R2"]._selected is True
+
+    def test_click_emits_signal(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+
+        received = []
+        editor.component_selected.connect(lambda ref: received.append(ref))
+        editor._on_component_clicked("C1")
+        assert received == ["C1"]
+
+    def test_select_nonexistent_ref_no_crash(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        editor.select_component("ZX")  # 不应崩溃
+
+
+# ── 刷新功能 ──────────────────────────────────────────────────────────────
+
+class TestSchematicEditorRefresh:
+    def test_refresh_component_value(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        editor.refresh_component("R1", {"value": "4.7k"})
+        assert "R1" in editor._comp_items
+        comp = next(c for c in editor._components if c["ref"] == "R1")
+        assert comp["value"] == "4.7k"
+
+    def test_refresh_component_ref(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        editor.select_component("R1")
+        editor.refresh_component("R1", {"ref": "R1_new", "value": "10k"})
+        assert "R1_new" in editor._comp_items
+        assert "R1" not in editor._comp_items
+        assert editor._selected_ref == "R1_new"
+
+    def test_refresh_nonexistent_no_crash(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        editor.refresh_component("NOPE", {"value": "x"})  # 不应崩溃
+
+    def test_component_items_are_movable(self, qapp):
+        from PyQt6.QtWidgets import QGraphicsItem
+        from voltsnap.gui.schematic_editor import SchematicEditor
+
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        flags = editor._comp_items["R1"].flags()
+        assert flags & QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+
+
+# ── 仿真叠加 ──────────────────────────────────────────────────────────────
+
+class _FakeSimResult:
+    """模拟 SimulationResult"""
+    def __init__(self, node_voltages, branch_currents):
+        self.node_voltages = node_voltages
+        self.branch_currents = branch_currents
+
+
+class TestSchematicEditorSimulationOverlay:
+    def test_show_simulation_labels(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        result = _FakeSimResult(
+            node_voltages={"v(n1)": 5.0, "v(n2)": 2.5},
+            branch_currents={"i(v1)": -0.0025, "i(r1)": 0.0025},
+        )
+        editor.show_simulation_result(result)
+        r1_item = editor._comp_items["R1"]
+        assert len(r1_item._sim_texts) > 0
+        assert len(editor._overlay_items) > 0
+
+    def test_clear_simulation_overlay(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        result = _FakeSimResult(
+            node_voltages={"v(n1)": 5.0},
+            branch_currents={"i(r1)": 0.001},
+        )
+        editor.show_simulation_result(result)
+        editor.clear_simulation_overlay()
+        for item in editor._comp_items.values():
+            assert len(item._sim_texts) == 0
+        assert len(editor._overlay_items) == 0
+
+    def test_unmatched_node_voltages_show_summary(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        editor.load_components(_sample_components())
+        result = _FakeSimResult(
+            node_voltages={"N1": 5.0, "N2": 2.5},
+            branch_currents={"V1#branch": -0.0025},
+        )
+        editor.show_simulation_result(result)
+        assert len(editor._overlay_items) == 2
+
+    def test_show_then_reload_clears(self, qapp):
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        editor = SchematicEditor()
+        comps = _sample_components()
+        editor.load_components(comps)
+        result = _FakeSimResult(
+            node_voltages={"v(n1)": 5.0},
+            branch_currents={"i(r1)": 0.001},
+        )
+        editor.show_simulation_result(result)
+        editor.load_components([comps[0]])
+        assert len(editor._comp_items) == 1
+
+
+# ── ComponentItem 符号类型 ────────────────────────────────────────────────
+
+class TestComponentItemTypes:
+    """验证各类型元件都能正常创建"""
+
+    TYPES = [
+        "resistor", "capacitor", "inductor",
+        "voltage_source", "current_source", "ground",
+        "diode", "led", "op_amp", "switch",
+        "npn_transistor", "pnp_transistor", "nmos", "pmos", "unknown",
+    ]
+
+    @pytest.mark.parametrize("comp_type", TYPES)
+    def test_create_each_type(self, qapp, comp_type):
+        from voltsnap.gui.schematic_editor import ComponentItem
+        comp = {"ref": "X1", "type": comp_type, "value": "1k", "confidence": 1.0, "center": (0, 0)}
+        item = ComponentItem(comp)
+        assert item.ref == "X1"
+        assert item.comp_type == comp_type
+        assert len(item._body_items) > 0

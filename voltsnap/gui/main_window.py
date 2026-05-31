@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSplitter,
     QStatusBar,
+    QTabWidget,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -28,6 +29,7 @@ from PyQt6.QtWidgets import (
 
 from voltsnap.gui.image_panel import ImagePanel
 from voltsnap.gui.circuit_panel import CircuitPanel
+from voltsnap.gui.schematic_editor import SchematicEditor
 from voltsnap.gui.simulation_panel import SimulationPanel
 from voltsnap.gui.worker import InferenceWorker, SimulationWorker
 from voltsnap.models import SimulationResult
@@ -84,12 +86,17 @@ class MainWindow(QMainWindow):
         export_menu.addAction(self.action_export_simulation)
 
     def _init_panels(self):
-        """初始化三栏面板"""
+        """初始化三栏面板，左栏使用 Tab 切换图像视图和原理图"""
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # 左栏：图像面板
+        # 左栏：Tab 切换图像面板 / 原理图编辑器
         self.image_panel = ImagePanel()
-        splitter.addWidget(self.image_panel)
+        self.schematic_editor = SchematicEditor()
+
+        left_tabs = QTabWidget()
+        left_tabs.addTab(self.image_panel, "原始图像")
+        left_tabs.addTab(self.schematic_editor, "原理图")
+        splitter.addWidget(left_tabs)
 
         # 中栏：电路面板
         self.circuit_panel = CircuitPanel()
@@ -179,21 +186,37 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
 
     def _connect_selection(self):
-        """连接图像面板与电路面板的双向选择联动"""
+        """连接图像面板、原理图编辑器与电路面板的双向选择联动"""
         self.image_panel.component_selected.connect(self._on_image_component_selected)
         self.circuit_panel.component_selected.connect(self._on_table_component_selected)
+        self.circuit_panel.component_changed.connect(self._on_table_component_changed)
+        self.schematic_editor.component_selected.connect(self._on_schematic_component_selected)
 
     # ── 事件处理 ──────────────────────────────────────────────────────
 
     def _on_image_component_selected(self, ref):
-        """图像框点击 -> 选中表格行 + 更新状态栏"""
+        """图像框点击 -> 选中表格行 + 原理图 + 更新状态栏"""
         self.circuit_panel.select_component(ref)
+        self.schematic_editor.select_component(ref)
         self._update_status_for_component(ref)
 
     def _on_table_component_selected(self, ref):
-        """表格行选择 -> 高亮图像框 + 更新状态栏"""
+        """表格行选择 -> 高亮图像框 + 原理图 + 更新状态栏"""
+        self.image_panel.select_component(ref)
+        self.schematic_editor.select_component(ref)
+        self._update_status_for_component(ref)
+
+    def _on_schematic_component_selected(self, ref):
+        """原理图点击 -> 选中表格行 + 图像框 + 更新状态栏"""
+        self.circuit_panel.select_component(ref)
         self.image_panel.select_component(ref)
         self._update_status_for_component(ref)
+
+    def _on_table_component_changed(self, old_ref: str, updates: dict):
+        self.schematic_editor.refresh_component(old_ref, updates)
+        new_ref = updates.get("ref", old_ref)
+        if self.schematic_editor._selected_ref == new_ref:
+            self._update_status_for_component(new_ref)
 
     def _update_status_for_component(self, ref: str | None):
         """状态栏显示所选元件信息"""
@@ -258,6 +281,9 @@ class MainWindow(QMainWindow):
         # 更新电路面板
         self.circuit_panel.load_components(result.bound_components)
 
+        # 更新原理图编辑器
+        self.schematic_editor.load_components(result.bound_components)
+
         # 更新仿真面板（网表）
         self.simulation_panel.set_netlist(result.netlist)
 
@@ -300,6 +326,7 @@ class MainWindow(QMainWindow):
 
         if result.success:
             self.simulation_panel.show_results(result)
+            self.schematic_editor.show_simulation_result(result)
             self.log(f"仿真成功: {result.node_voltages}")
             self.status_bar.showMessage("仿真完成  |  可通过 文件→导出 保存结果")
         else:

@@ -31,6 +31,7 @@ class TestMainWindow:
         assert window.image_panel is not None
         assert window.circuit_panel is not None
         assert window.simulation_panel is not None
+        assert window.schematic_editor is not None
 
     def test_toolbar_actions(self, qapp):
         from voltsnap.gui.main_window import MainWindow
@@ -190,6 +191,7 @@ class TestSelectionSync:
         ]
         window.circuit_panel.load_components(comps)
         window.image_panel.overlay_detections(detections)
+        window.schematic_editor.load_components(comps)
         return window
 
     def test_image_click_selects_table_row(self, qapp):
@@ -211,6 +213,53 @@ class TestSelectionSync:
         window = self._make_window_with_data(qapp)
         window.circuit_panel.select_component("V1")
         assert window.image_panel._selected_ref == "V1"
+
+    def test_table_select_highlights_schematic(self, qapp):
+        """选中表格行应高亮原理图元件"""
+        window = self._make_window_with_data(qapp)
+        window.circuit_panel.select_component("R1")
+        assert window.schematic_editor._selected_ref == "R1"
+
+    def test_schematic_click_selects_table(self, qapp):
+        """点击原理图元件应选中对应表格行"""
+        window = self._make_window_with_data(qapp)
+        window.schematic_editor.component_selected.emit("R1")
+        indexes = window.circuit_panel.table_view.selectionModel().selectedRows()
+        assert len(indexes) == 1
+        row = indexes[0].row()
+        ref = window.circuit_panel.table_model.data(
+            window.circuit_panel.table_model.index(row, 0)
+        )
+        assert ref == "R1"
+
+    def test_schematic_click_selects_image(self, qapp):
+        """点击原理图元件应高亮图像框"""
+        window = self._make_window_with_data(qapp)
+        window.schematic_editor.component_selected.emit("V1")
+        assert window.image_panel._selected_ref == "V1"
+
+    def test_image_click_selects_schematic(self, qapp):
+        """点击图像框应高亮原理图元件"""
+        window = self._make_window_with_data(qapp)
+        window.image_panel.component_selected.emit("V1")
+        assert window.schematic_editor._selected_ref == "V1"
+
+    def test_table_edit_refreshes_schematic_value(self, qapp):
+        window = self._make_window_with_data(qapp)
+        model = window.circuit_panel.table_model
+        idx = model.index(1, 2)
+        assert model.setData(idx, "4.7k")
+        assert window.schematic_editor._comp_items["R1"].value == "4.7k"
+
+    def test_table_edit_refreshes_schematic_ref(self, qapp):
+        window = self._make_window_with_data(qapp)
+        window.circuit_panel.select_component("R1")
+        model = window.circuit_panel.table_model
+        idx = model.index(1, 0)
+        assert model.setData(idx, "R10")
+        assert "R10" in window.schematic_editor._comp_items
+        assert "R1" not in window.schematic_editor._comp_items
+        assert window.schematic_editor._selected_ref == "R10"
 
     def test_status_bar_shows_component_info(self, qapp):
         """状态栏应显示所选元件信息"""
@@ -257,3 +306,27 @@ class TestSelectionSync:
         panel.select_component("R1")
         assert panel._selected_ref == "R1"
         assert "R1" in panel._rect_items
+
+
+class TestSchematicEditorInMainWindow:
+    """SchematicEditor 与 MainWindow 集成测试"""
+
+    def test_schematic_editor_exists(self, qapp):
+        from voltsnap.gui.main_window import MainWindow
+        window = MainWindow()
+        assert hasattr(window, 'schematic_editor')
+        from voltsnap.gui.schematic_editor import SchematicEditor
+        assert isinstance(window.schematic_editor, SchematicEditor)
+
+    def test_left_tabs_contain_both_panels(self, qapp):
+        """左栏 Tab 应包含原始图像和原理图两个标签页"""
+        from voltsnap.gui.main_window import MainWindow
+        window = MainWindow()
+        # 查找 QTabWidget
+        from PyQt6.QtWidgets import QTabWidget
+        splitter = window.centralWidget()
+        left_tabs = splitter.widget(0)
+        assert isinstance(left_tabs, QTabWidget)
+        assert left_tabs.count() == 2
+        assert left_tabs.tabText(0) == "原始图像"
+        assert left_tabs.tabText(1) == "原理图"
