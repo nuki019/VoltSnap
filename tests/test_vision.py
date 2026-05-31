@@ -5,6 +5,7 @@ import pytest
 from voltsnap.vision.preprocessor import ImagePreprocessor
 from voltsnap.vision.topology import TopologyReconstructor
 from voltsnap.datagen.circuit_templates import get_demo_circuits
+from voltsnap.datagen.degradation import apply_single_degradation
 from voltsnap.datagen.schematic_renderer import SchematicRenderer
 from voltsnap.config import Config
 
@@ -77,3 +78,51 @@ class TestTopologyReconstructor:
         r2_pin1 = "R2_pin1"
         if r1_pin2 in topo.pin_to_net and r2_pin1 in topo.pin_to_net:
             assert topo.pin_to_net[r1_pin2] == topo.pin_to_net[r2_pin1]
+
+
+class TestPreprocessorOnDegradedImages:
+    """预处理对合成退化图像的鲁棒性测试"""
+
+    @pytest.fixture
+    def clean_bgr(self):
+        """生成一张干净的 BGR 测试图（白底黑线条模拟电路）"""
+        img = np.full((200, 300, 3), 255, dtype=np.uint8)
+        # 画几条线模拟电路走线
+        img[50:52, 30:270] = 0
+        img[148:150, 30:270] = 0
+        img[50:150, 148:150] = 0
+        return img
+
+    def _check_binary_output(self, preprocessor, bgr_img):
+        """验证预处理输出：binary 为 0/255，有前景像素"""
+        result = preprocessor.process_from_array(bgr_img)
+        unique = set(np.unique(result.binary))
+        assert unique <= {0, 255}, f"binary 含非 0/255 值: {unique}"
+        assert result.binary.ndim == 2
+        assert result.gray.ndim == 2
+        assert np.sum(result.binary > 0) > 50, "前景像素过少"
+        return result
+
+    def test_preprocess_shadow_degraded(self, clean_bgr):
+        """预处理能正确处理阴影退化图"""
+        degraded = apply_single_degradation(clean_bgr, "shadow", seed=42)
+        preprocessor = ImagePreprocessor()
+        self._check_binary_output(preprocessor, degraded)
+
+    def test_preprocess_moire_degraded(self, clean_bgr):
+        """预处理能正确处理摩尔纹退化图"""
+        degraded = apply_single_degradation(clean_bgr, "moire", seed=42)
+        preprocessor = ImagePreprocessor()
+        self._check_binary_output(preprocessor, degraded)
+
+    def test_preprocess_uneven_light_degraded(self, clean_bgr):
+        """预处理能正确处理不均匀光照退化图"""
+        degraded = apply_single_degradation(clean_bgr, "uneven_light", seed=42)
+        preprocessor = ImagePreprocessor()
+        self._check_binary_output(preprocessor, degraded)
+
+    def test_preprocess_paper_texture_degraded(self, clean_bgr):
+        """预处理能正确处理纸张纹理退化图"""
+        degraded = apply_single_degradation(clean_bgr, "paper_texture", seed=42)
+        preprocessor = ImagePreprocessor()
+        self._check_binary_output(preprocessor, degraded)

@@ -1,6 +1,8 @@
 """VoltSnap 主窗口 — 三栏布局"""
 from __future__ import annotations
 
+import csv
+import json
 import logging
 from pathlib import Path
 
@@ -28,6 +30,7 @@ from voltsnap.gui.image_panel import ImagePanel
 from voltsnap.gui.circuit_panel import CircuitPanel
 from voltsnap.gui.simulation_panel import SimulationPanel
 from voltsnap.gui.worker import InferenceWorker, SimulationWorker
+from voltsnap.models import SimulationResult
 
 logger = logging.getLogger("voltsnap.gui")
 
@@ -52,14 +55,33 @@ class MainWindow(QMainWindow):
         self._current_image_path: str | None = None
         self._inference_worker: InferenceWorker | None = None
         self._sim_worker: SimulationWorker | None = None
+        self._last_recognition_result = None
+        self._last_simulation_result: SimulationResult | None = None
 
         # 初始化 UI
         self._init_panels()
         self._init_toolbar()
+        self._init_menubar()
         self._init_statusbar()
         self._init_log_dock()
+        self._connect_selection()
 
     # ── UI 初始化 ─────────────────────────────────────────────────────
+
+    def _init_menubar(self):
+        """初始化菜单栏，提供导出等操作的快捷入口"""
+        menubar = self.menuBar()
+
+        # 文件菜单
+        file_menu = menubar.addMenu("文件(&F)")
+        file_menu.addAction(self.action_open)
+        file_menu.addSeparator()
+
+        # 导出子菜单 — 提升导出功能可发现性
+        export_menu = file_menu.addMenu("导出(&E)")
+        export_menu.addAction(self.action_export)
+        export_menu.addAction(self.action_export_recognition)
+        export_menu.addAction(self.action_export_simulation)
 
     def _init_panels(self):
         """初始化三栏面板"""
@@ -110,11 +132,24 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
+        toolbar.addSeparator()
+
         # 导出网表
         self.action_export = QAction("导出网表", self)
         self.action_export.setShortcut("Ctrl+E")
         self.action_export.triggered.connect(self._on_export_netlist)
         toolbar.addAction(self.action_export)
+
+        # 导出识别结果
+        self.action_export_recognition = QAction("导出识别", self)
+        self.action_export_recognition.setShortcut("Ctrl+Shift+E")
+        self.action_export_recognition.triggered.connect(self._on_export_recognition)
+        toolbar.addAction(self.action_export_recognition)
+
+        # 导出仿真结果
+        self.action_export_simulation = QAction("导出仿真", self)
+        self.action_export_simulation.triggered.connect(self._on_export_simulation)
+        toolbar.addAction(self.action_export_simulation)
 
     def _init_statusbar(self):
         """初始化状态栏"""
@@ -143,7 +178,40 @@ class MainWindow(QMainWindow):
         dock.setWidget(self.log_text)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
 
+    def _connect_selection(self):
+        """连接图像面板与电路面板的双向选择联动"""
+        self.image_panel.component_selected.connect(self._on_image_component_selected)
+        self.circuit_panel.component_selected.connect(self._on_table_component_selected)
+
     # ── 事件处理 ──────────────────────────────────────────────────────
+
+    def _on_image_component_selected(self, ref):
+        """图像框点击 -> 选中表格行 + 更新状态栏"""
+        self.circuit_panel.select_component(ref)
+        self._update_status_for_component(ref)
+
+    def _on_table_component_selected(self, ref):
+        """表格行选择 -> 高亮图像框 + 更新状态栏"""
+        self.image_panel.select_component(ref)
+        self._update_status_for_component(ref)
+
+    def _update_status_for_component(self, ref: str | None):
+        """状态栏显示所选元件信息"""
+        if ref is None:
+            self.status_bar.showMessage("就绪 — 导入电路图开始识别")
+            return
+        comps = self.circuit_panel.get_components()
+        comp = next((c for c in comps if c.get("ref") == ref), None)
+        if comp:
+            t = comp.get("type", "")
+            display = self.circuit_panel.table_model.TYPE_DISPLAY.get(t, t)
+            value = comp.get("value", "")
+            conf = comp.get("confidence", 0)
+            self.status_bar.showMessage(
+                f"选中: {ref} | 类型: {display} | 值: {value} | 置信度: {conf:.0%}"
+            )
+        else:
+            self.status_bar.showMessage(f"选中: {ref}")
 
     def _on_open_image(self):
         """导入图片"""
@@ -182,6 +250,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.action_recognize.setEnabled(True)
 
+        self._last_recognition_result = result
+
         # 更新图像面板（叠加识别框）
         self.image_panel.overlay_detections(result.detections)
 
@@ -194,7 +264,7 @@ class MainWindow(QMainWindow):
         self.log(f"识别完成: {len(result.components)} 个元件")
         self.status_bar.showMessage(
             f"识别完成: {len(result.detections)} 个检测, "
-            f"{len(result.components)} 个绑定元件"
+            f"{len(result.components)} 个绑定元件  |  可通过 文件→导出 保存结果"
         )
 
     def _on_recognition_error(self, error_msg):
@@ -226,9 +296,12 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.action_simulate.setEnabled(True)
 
+        self._last_simulation_result = result
+
         if result.success:
             self.simulation_panel.show_results(result)
             self.log(f"仿真成功: {result.node_voltages}")
+            self.status_bar.showMessage("仿真完成  |  可通过 文件→导出 保存结果")
         else:
             self.log(f"仿真失败: {result.error_message}")
             QMessageBox.warning(self, "仿真错误", result.error_message or "未知错误")
@@ -252,9 +325,112 @@ class MainWindow(QMainWindow):
             "circuit.cir",
             "SPICE 网表 (*.cir *.sp *.net);;所有文件 (*)",
         )
-        if path:
+        if not path:
+            return
+
+        try:
             Path(path).write_text(netlist, encoding="utf-8")
             self.log(f"网表已导出: {path}")
+            self.status_bar.showMessage(f"网表已导出: {Path(path).name}")
+        except OSError as e:
+            self.log(f"导出失败: {e}")
+            QMessageBox.critical(self, "导出错误", f"无法写入文件:\n{e}")
+
+    def _on_export_recognition(self):
+        """导出识别结果为 JSON"""
+        if self._last_recognition_result is None:
+            QMessageBox.warning(self, "提示", "没有可导出的识别结果，请先运行识别")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出识别结果",
+            "recognition_result.json",
+            "JSON 文件 (*.json);;所有文件 (*)",
+        )
+        if not path:
+            return
+
+        try:
+            result = self._last_recognition_result
+            export_data = {
+                "image_path": result.image_path,
+                "success": result.success,
+                "error_message": result.error_message,
+                "components": [
+                    {
+                        "ref": c.ref,
+                        "type": c.type,
+                        "value": c.value,
+                        "pins": [
+                            {"name": p.name, "position": p.position, "pixel_position": p.pixel_position}
+                            for p in c.pins
+                        ],
+                    }
+                    for c in result.components
+                ],
+                "detections": result.detections,
+                "ocr_results": result.ocr_results,
+                "pin_to_net": {k: v for k, v in result.pin_to_net.items()},
+                "netlist": result.netlist,
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(export_data, f, ensure_ascii=False, indent=2)
+            self.log(f"识别结果已导出: {path}")
+            self.status_bar.showMessage(f"识别结果已导出: {Path(path).name}")
+        except (OSError, TypeError) as e:
+            self.log(f"导出失败: {e}")
+            QMessageBox.critical(self, "导出错误", f"无法导出识别结果:\n{e}")
+
+    def _on_export_simulation(self):
+        """导出仿真结果为 JSON 或 CSV"""
+        if self._last_simulation_result is None:
+            QMessageBox.warning(self, "提示", "没有可导出的仿真结果，请先运行仿真")
+            return
+
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "导出仿真结果",
+            "simulation_result.json",
+            "JSON 文件 (*.json);;CSV 文件 (*.csv);;所有文件 (*)",
+        )
+        if not path:
+            return
+
+        try:
+            result = self._last_simulation_result
+            if path.endswith(".csv"):
+                self._export_simulation_csv(path, result)
+            else:
+                self._export_simulation_json(path, result)
+            self.log(f"仿真结果已导出: {path}")
+            self.status_bar.showMessage(f"仿真结果已导出: {Path(path).name}")
+        except (OSError, TypeError) as e:
+            self.log(f"导出失败: {e}")
+            QMessageBox.critical(self, "导出错误", f"无法导出仿真结果:\n{e}")
+
+    @staticmethod
+    def _export_simulation_json(path: str, result: SimulationResult):
+        """导出仿真结果为 JSON"""
+        export_data = {
+            "success": result.success,
+            "error_message": result.error_message,
+            "node_voltages": result.node_voltages,
+            "branch_currents": result.branch_currents,
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(export_data, f, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def _export_simulation_csv(path: str, result: SimulationResult):
+        """导出仿真结果为 CSV"""
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["类型", "名称", "值"])
+            for node, voltage in sorted(result.node_voltages.items()):
+                writer.writerow(["电压", node, f"{voltage:.6f}"])
+            for branch, current in sorted(result.branch_currents.items()):
+                writer.writerow(["电流", branch, f"{current:.6e}"])
 
     # ── 工具方法 ──────────────────────────────────────────────────────
 

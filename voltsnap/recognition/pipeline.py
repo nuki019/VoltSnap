@@ -313,16 +313,23 @@ class RecognitionPipeline:
             net_counts[net_id] = net_counts.get(net_id, 0) + 1
         gnd_net = max(net_counts, key=net_counts.get) if net_counts else 0
 
+        def _node(pin_name: str) -> str:
+            net_id = pin_to_net.get(pin_name, 0)
+            return "0" if net_id == gnd_net else f"N{net_id}"
+
+        has_diode = False
+        has_op_amp = False
+        has_bjt_npn = False
+        has_bjt_pnp = False
+        has_nmos = False
+        has_pmos = False
+
         for comp in components:
             if len(comp.pins) < 2:
                 continue
 
-            pin1_net = pin_to_net.get(comp.pins[0].name, 0)
-            pin2_net = pin_to_net.get(comp.pins[1].name, 0)
-
-            # GND 映射为 0
-            n1 = "0" if pin1_net == gnd_net else f"N{pin1_net}"
-            n2 = "0" if pin2_net == gnd_net else f"N{pin2_net}"
+            n1 = _node(comp.pins[0].name)
+            n2 = _node(comp.pins[1].name)
 
             prefix_map = {
                 "resistor": "R",
@@ -330,6 +337,14 @@ class RecognitionPipeline:
                 "inductor": "L",
                 "voltage_source": "V",
                 "current_source": "I",
+                "diode": "D",
+                "op_amp": "X",
+                "led": "D",
+                "switch": "S",
+                "npn_transistor": "Q",
+                "pnp_transistor": "Q",
+                "nmos": "M",
+                "pmos": "M",
             }
             prefix = prefix_map.get(comp.type, "R")
 
@@ -337,8 +352,65 @@ class RecognitionPipeline:
                 lines.append(f"{prefix}{comp.ref} {n1} {n2} DC {comp.value}")
             elif comp.type == "current_source":
                 lines.append(f"{prefix}{comp.ref} {n1} {n2} DC {comp.value}")
+            elif comp.type == "diode":
+                lines.append(f"{prefix}{comp.ref} {n1} {n2} DMOD")
+                has_diode = True
+            elif comp.type == "led":
+                lines.append(f"{prefix}{comp.ref} {n1} {n2} LEDMOD")
+                has_diode = True  # LED 模型追加在 diode 之后
+            elif comp.type == "op_amp":
+                # 运放使用子电路引用，3 引脚: in+, in-, out
+                has_op_amp = True
+                n3 = _node(comp.pins[2].name) if len(comp.pins) >= 3 else "NC"
+                lines.append(f"{prefix}{comp.ref} {n1} {n2} {n3} OPAMP")
+            elif comp.type == "ground":
+                # 接地符号不生成 SPICE 行（通过 net 0 隐式处理）
+                pass
+            elif comp.type == "switch":
+                lines.append(f"{prefix}{comp.ref} {n1} {n2} SWMOD")
+            elif comp.type == "npn_transistor":
+                # BJT: collector, base, emitter
+                n3 = _node(comp.pins[2].name) if len(comp.pins) >= 3 else "0"
+                lines.append(f"{prefix}{comp.ref} {n1} {n2} {n3} NPNMOD")
+                has_bjt_npn = True
+            elif comp.type == "pnp_transistor":
+                n3 = _node(comp.pins[2].name) if len(comp.pins) >= 3 else "0"
+                lines.append(f"{prefix}{comp.ref} {n1} {n2} {n3} PNPMOD")
+                has_bjt_pnp = True
+            elif comp.type == "nmos":
+                # MOSFET: drain, gate, source, body(=source)
+                n3 = _node(comp.pins[2].name) if len(comp.pins) >= 3 else "0"
+                n4 = n3  # body = source
+                if len(comp.pins) >= 4:
+                    n4 = _node(comp.pins[3].name)
+                lines.append(f"{prefix}{comp.ref} {n1} {n2} {n3} {n4} NMOSMOD")
+                has_nmos = True
+            elif comp.type == "pmos":
+                n3 = _node(comp.pins[2].name) if len(comp.pins) >= 3 else "0"
+                n4 = n3
+                if len(comp.pins) >= 4:
+                    n4 = _node(comp.pins[3].name)
+                lines.append(f"{prefix}{comp.ref} {n1} {n2} {n3} {n4} PMOSMOD")
+                has_pmos = True
             else:
                 lines.append(f"{prefix}{comp.ref} {n1} {n2} {comp.value}")
+
+        # 追加必需的模型/子电路定义
+        if has_diode:
+            lines.append(".model DMOD D")
+            lines.append(".model LEDMOD D(Is=1e-20 N=2 Rs=0.1 BV=5 IBV=10u)")
+        if has_op_amp:
+            lines.append(".subckt OPAMP in+ in- out")
+            lines.append("E1 out 0 in+ in- 100k")
+            lines.append(".ends OPAMP")
+        if has_bjt_npn:
+            lines.append(".model NPNMOD NPN(Is=1e-14 Bf=100)")
+        if has_bjt_pnp:
+            lines.append(".model PNPMOD PNP(Is=1e-14 Bf=100)")
+        if has_nmos:
+            lines.append(".model NMOSMOD NMOS(Vto=1 Kp=2e-4)")
+        if has_pmos:
+            lines.append(".model PMOSMOD PMOS(Vto=-1 Kp=1e-4)")
 
         lines.append(".op")
         lines.append(".end")

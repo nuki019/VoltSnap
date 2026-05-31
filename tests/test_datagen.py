@@ -20,11 +20,14 @@ def renderer():
 class TestCircuitTemplates:
     def test_demo_circuits_count(self):
         circuits = get_demo_circuits()
-        assert len(circuits) == 3
+        assert len(circuits) == 5
 
     def test_demo_circuits_have_names(self):
         names = {c.name for c in get_demo_circuits()}
-        assert names == {"resistor_divider", "parallel_resistors", "rc_circuit"}
+        assert names == {
+            "resistor_divider", "parallel_resistors", "rc_circuit",
+            "diode_rectifier", "op_amp_inverting",
+        }
 
     def test_demo_circuits_have_components(self):
         for circuit in get_demo_circuits():
@@ -93,6 +96,38 @@ class TestRandomCircuitGenerator:
         assert "R1" in netlist
         assert "R2" in netlist
 
+    def test_generate_diode_series(self):
+        gen = RandomCircuitGenerator(seed=42)
+        circuit = gen.generate("diode_series")
+        assert circuit.name == "diode_series"
+        types = {c.type for c in circuit.components}
+        assert "diode" in types
+        assert "voltage_source" in types
+        assert "resistor" in types
+        # 二极管应有 2 引脚
+        diode = next(c for c in circuit.components if c.type == "diode")
+        assert len(diode.pins) == 2
+        assert "anode" in diode.pins[0].name
+        assert "cathode" in diode.pins[1].name
+        # 网表应包含 .model DMOD D
+        assert ".model DMOD D" in circuit.expected_netlist
+        assert "D1" in circuit.expected_netlist
+
+    def test_generate_op_amp_inverting(self):
+        gen = RandomCircuitGenerator(seed=42)
+        circuit = gen.generate("op_amp_inverting")
+        assert circuit.name == "op_amp_inverting"
+        types = {c.type for c in circuit.components}
+        assert "op_amp" in types
+        # 运放应有 3 引脚
+        opamp = next(c for c in circuit.components if c.type == "op_amp")
+        assert len(opamp.pins) == 3
+        # 网表应包含子电路定义
+        netlist = circuit.expected_netlist
+        assert ".subckt OPAMP" in netlist
+        assert ".ends OPAMP" in netlist
+        assert "XU1" in netlist
+
 
 class TestSchematicRenderer:
     def test_render_resistor_divider(self, renderer, output_dir):
@@ -130,3 +165,52 @@ class TestSchematicRenderer:
             result = renderer.render(circuit, out)
             assert Path(out).exists()
             assert len(result.components) >= 2
+
+    def test_render_diode_rectifier(self, renderer, output_dir):
+        """二极管整流电路渲染：2 引脚坐标非零"""
+        circuit = next(c for c in get_demo_circuits() if c.name == "diode_rectifier")
+        out = str(output_dir / "diode.png")
+        result = renderer.render(circuit, out)
+        assert Path(out).exists()
+        diode = next(c for c in result.components if c.type == "diode")
+        assert len(diode.pins) == 2
+        assert diode.pins[0].pixel_position != (0, 0)
+        assert diode.pins[1].pixel_position != (0, 0)
+        # 阳极和阴极不应重合
+        assert diode.pins[0].pixel_position != diode.pins[1].pixel_position
+
+    def test_render_op_amp_inverting(self, renderer, output_dir):
+        """反相放大器渲染：3 引脚坐标非零且不重合"""
+        circuit = next(c for c in get_demo_circuits() if c.name == "op_amp_inverting")
+        out = str(output_dir / "opamp.png")
+        result = renderer.render(circuit, out)
+        assert Path(out).exists()
+        opamp = next(c for c in result.components if c.type == "op_amp")
+        assert len(opamp.pins) == 3
+        for pin in opamp.pins:
+            assert pin.pixel_position != (0, 0)
+        # 三个引脚位置应互不相同
+        positions = [p.pixel_position for p in opamp.pins]
+        assert len(set(positions)) == 3
+
+    def test_render_random_diode_series(self, renderer, output_dir):
+        """随机 diode_series 拓扑渲染不崩"""
+        gen = RandomCircuitGenerator(seed=42)
+        circuit = gen.generate("diode_series")
+        circuit.name = "diode_series_00000"
+        out = str(output_dir / "rand_diode.png")
+        result = renderer.render(circuit, out)
+        assert Path(out).exists()
+        diode = next(c for c in result.components if c.type == "diode")
+        assert len(diode.pins) == 2
+
+    def test_render_random_op_amp_inverting(self, renderer, output_dir):
+        """随机 op_amp_inverting 拓扑渲染不崩"""
+        gen = RandomCircuitGenerator(seed=42)
+        circuit = gen.generate("op_amp_inverting")
+        circuit.name = "op_amp_inverting_00000"
+        out = str(output_dir / "rand_opamp.png")
+        result = renderer.render(circuit, out)
+        assert Path(out).exists()
+        opamp = next(c for c in result.components if c.type == "op_amp")
+        assert len(opamp.pins) == 3

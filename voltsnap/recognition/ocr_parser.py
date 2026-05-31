@@ -31,9 +31,9 @@ _VALUE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 元件编号正则：R1, C2, L3, V1, I1 等
+# 元件编号正则：R1, C2, L3, V1, I1, D1, U1, G1, S1, LED1, Q1, M1 等
 _REF_RE = re.compile(
-    r"^[RrLlCcVvIi]\d+$",
+    r"^[RrLlCcVvIiDdUuGgSsMm]\d+$|^[Ll][Ee][Dd]\d+$|^[Qq]\d+$",
 )
 
 
@@ -143,6 +143,9 @@ class OCRParser:
 
     def _ref_to_type(self, ref: str) -> str:
         """从元件编号推断类型"""
+        upper = ref.upper()
+        if upper.startswith("LED"):
+            return "led"
         prefix = ref[0].upper()
         type_map = {
             "R": "resistor",
@@ -150,6 +153,12 @@ class OCRParser:
             "L": "inductor",
             "V": "voltage_source",
             "I": "current_source",
+            "D": "diode",
+            "U": "op_amp",
+            "G": "ground",
+            "S": "switch",
+            "Q": "npn_transistor",
+            "M": "nmos",
         }
         return type_map.get(prefix, "unknown")
 

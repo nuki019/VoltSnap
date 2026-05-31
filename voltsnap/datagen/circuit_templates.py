@@ -76,6 +76,31 @@ def _make_current_source(ref: str, value: str) -> ComponentInfo:
     )
 
 
+def _make_diode(ref: str, value: str = "D") -> ComponentInfo:
+    return ComponentInfo(
+        ref=ref,
+        type="diode",
+        value=value,
+        pins=[
+            PinInfo(name=f"{ref}_anode", component_ref=ref, position=(0, 0)),
+            PinInfo(name=f"{ref}_cathode", component_ref=ref, position=(0, 0)),
+        ],
+    )
+
+
+def _make_op_amp(ref: str, value: str = "OP") -> ComponentInfo:
+    return ComponentInfo(
+        ref=ref,
+        type="op_amp",
+        value=value,
+        pins=[
+            PinInfo(name=f"{ref}_in+", component_ref=ref, position=(0, 0)),
+            PinInfo(name=f"{ref}_in-", component_ref=ref, position=(0, 0)),
+            PinInfo(name=f"{ref}_out", component_ref=ref, position=(0, 0)),
+        ],
+    )
+
+
 # ── 阶段 0 固定演示电路 ──────────────────────────────────────────────
 
 
@@ -85,6 +110,8 @@ def get_demo_circuits() -> list[CircuitSpec]:
         _resistor_divider(),
         _parallel_resistors(),
         _rc_circuit(),
+        _diode_rectifier(),
+        _op_amp_inverting(),
     ]
 
 
@@ -145,6 +172,52 @@ def _rc_circuit() -> CircuitSpec:
     )
 
 
+def _diode_rectifier() -> CircuitSpec:
+    """半波整流电路: V1 → D1 → R1 → GND"""
+    return CircuitSpec(
+        name="diode_rectifier",
+        components=[
+            _make_voltage_source("V1", "5"),
+            _make_diode("D1"),
+            _make_resistor("R1", "1k"),
+        ],
+        expected_netlist=(
+            "* VoltSnap Auto-Generated Netlist\n"
+            "V1 N1 0 DC 5\n"
+            "D1 N1 N2 DMOD\n"
+            "R1 N2 0 1k\n"
+            ".model DMOD D\n"
+            ".op\n"
+            ".end\n"
+        ),
+    )
+
+
+def _op_amp_inverting() -> CircuitSpec:
+    """反相放大器: V1 → R1 → (-) U1 (+) → GND, Rf 反馈"""
+    return CircuitSpec(
+        name="op_amp_inverting",
+        components=[
+            _make_voltage_source("V1", "1"),
+            _make_resistor("R1", "10k"),
+            _make_resistor("Rf", "20k"),
+            _make_op_amp("U1"),
+        ],
+        expected_netlist=(
+            "* VoltSnap Auto-Generated Netlist\n"
+            "V1 N1 0 DC 1\n"
+            "R1 N1 N2 10k\n"
+            "Rf N2 N3 20k\n"
+            "XU1 0 N2 N3 OPAMP\n"
+            ".subckt OPAMP in+ in- out\n"
+            "E1 out 0 in+ in- 100k\n"
+            ".ends OPAMP\n"
+            ".op\n"
+            ".end\n"
+        ),
+    )
+
+
 # ── 随机电路生成器 ────────────────────────────────────────────────────
 
 @dataclass
@@ -182,6 +255,8 @@ class RandomCircuitGenerator:
         "rl_series",
         "rlc_series",
         "two_mesh",
+        "diode_series",
+        "op_amp_inverting",
     ]
 
     def __init__(self, config: RandomCircuitConfig | None = None, seed: int | None = None):
@@ -381,6 +456,51 @@ class RandomCircuitGenerator:
             f".end\n"
         )
         return CircuitSpec(name="two_mesh", components=comps, expected_netlist=netlist)
+
+    def _gen_diode_series(self) -> CircuitSpec:
+        """二极管串联电路: V1 → D1 → R1 → GND"""
+        v_val = self._rand_voltage_value()
+        r_val = self._rand_resistor_value()
+        comps = [
+            _make_voltage_source("V1", v_val),
+            _make_diode("D1"),
+            _make_resistor("R1", r_val),
+        ]
+        netlist = (
+            f"* VoltSnap: diode_series\n"
+            f"V1 N1 0 DC {v_val}\n"
+            f"D1 N1 N2 DMOD\n"
+            f"R1 N2 0 {r_val}\n"
+            f".model DMOD D\n"
+            f".op\n"
+            f".end\n"
+        )
+        return CircuitSpec(name="diode_series", components=comps, expected_netlist=netlist)
+
+    def _gen_op_amp_inverting(self) -> CircuitSpec:
+        """反相放大器: V1 → R1 → (-) U1 (+), Rf 反馈"""
+        v_val = self._rand_voltage_value()
+        r1_val = self._rand_resistor_value()
+        rf_val = self._rand_resistor_value()
+        comps = [
+            _make_voltage_source("V1", v_val),
+            _make_resistor("R1", r1_val),
+            _make_resistor("Rf", rf_val),
+            _make_op_amp("U1"),
+        ]
+        netlist = (
+            f"* VoltSnap: op_amp_inverting\n"
+            f"V1 N1 0 DC {v_val}\n"
+            f"R1 N1 N2 {r1_val}\n"
+            f"Rf N2 N3 {rf_val}\n"
+            f"XU1 0 N2 N3 OPAMP\n"
+            f".subckt OPAMP in+ in- out\n"
+            f"E1 out 0 in+ in- 100k\n"
+            f".ends OPAMP\n"
+            f".op\n"
+            f".end\n"
+        )
+        return CircuitSpec(name="op_amp_inverting", components=comps, expected_netlist=netlist)
 
     # ── 辅助方法 ───────────────────────────────────────────────────────
 

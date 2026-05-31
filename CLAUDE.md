@@ -18,13 +18,16 @@ conda activate voltsnap && pytest tests/ -v
 # 运行单个测试文件
 pytest tests/test_vision.py -v
 
+# Lint（ruff，dev 依赖）
+ruff check voltsnap/ tests/
+
 # 验证环境依赖
 python tools/verify_env.py
 
-# 启动 Demo 管线（定义 → 渲染 → 预处理 → 拓扑 → 网表 → 仿真）
+# 启动 Demo 管线（schemdraw 渲染已知电路 → 预处理 → 拓扑 → 网表 → 仿真）
 python -m voltsnap.pipeline.demo_pipeline
 
-# 启动 GUI
+# 启动 GUI（调用 Recognition Pipeline，非 Demo Pipeline）
 python -m voltsnap.gui.app
 
 # YOLO 检测器训练（多步骤）
@@ -42,20 +45,25 @@ python scripts/train_detector.py --detect path/to/image.png
 voltsnap/
 ├── models.py          # 核心数据结构（dataclass）：PinInfo, ComponentInfo, CircuitSpec, RenderResult, SimulationResult 等
 ├── config.py          # 全局配置（路径、阈值）
-├── datagen/           # Layer 1 - 数据生成：电路模板、schemdraw 渲染、图像退化、批量生成、网表生成
+├── datagen/           # Layer 1 - 数据生成：电路模板、schemdraw 渲染、图像退化、批量生成、数据集划分、网表生成
 ├── vision/            # Layer 2 - 图像处理：灰度化、二值化、骨架化（Zhang-Suen）、连通分量、引脚-网络映射
-├── recognition/       # Layer 3 - 识别：YOLO OBB 检测、OCR 解析、匈牙利算法文本-元件绑定、端到端识别管线
+├── recognition/       # Layer 3 - 识别：YOLO OBB 检测、OCR 解析、匈牙利算法文本-元件绑定、标注格式转换、端到端识别管线
 ├── simulation/        # Layer 4 - 仿真：ngspice 子进程调用、输出解析、网表校验（悬空引脚/接地检测）
 ├── gui/               # Layer 5 - GUI：PyQt6 三面板布局（图像/元件表/仿真结果），QThread 异步架构
 └── pipeline/          # 管线编排：demo_pipeline.py 串联全部层级
 ```
+
+### 两条管线
+
+- **Demo Pipeline**（`pipeline/demo_pipeline.py`）：从 `CircuitSpec` 定义出发，用 schemdraw 渲染已知电路图，再走预处理 → 拓扑 → 网表 → 仿真。用于验证端到端流程，闭环电路拓扑退化时回退到模板网表。
+- **Recognition Pipeline**（`recognition/pipeline.py`）：从真实图片出发，走 YOLO 检测 → OCR → 文字绑定 → 拓扑 → 网表。GUI 调用的是这条管线。
 
 ### 关键设计决策
 
 - **元件检测**：YOLOv8 OBB（有向边界框），5 类元件（电阻/电容/电感/电压源/电流源）
 - **拓扑重建**：骨架化 + 连通分量分析，引脚通过搜索半径吸附到最近网络。已知限制：闭环电路会被坍缩为单连通分量
 - **文本绑定**：scipy 匈牙利算法最优匹配（scipy 不可用时降级为贪心匹配）
-- **仿真**：通过 subprocess 调用 ngspice -b，正则解析输出。ngspice 需外部安装，默认路径 `C:\tools\ngspice\Spice64\bin\ngspice.exe`
+- **仿真**：通过 subprocess 调用 ngspice -b，正则解析输出。ngspice 需外部安装，默认路径 `C:\tools\ngspice\Spice64\bin\ngspice.exe`，可通过 `NGSPICE_PATH` 环境变量覆盖
 - **OCR**：当前为模拟实现（从 annotation.json 读取），尚未接入真实 OCR 模型
 
 ### 可选依赖（惰性加载）
@@ -69,6 +77,8 @@ voltsnap/
 
 - `opencv-contrib-python` 必须是 contrib 版本（需要 `cv2.ximgproc.thinning`）
 - 测试中需要 ngspice 的用例会自动 `pytest.skip`
-- `.gitignore` 排除了 `*.pt` 模型文件
+- `.gitignore` 排除了 `*.pt` 模型文件和 `data/generated/`、`data/annotations/` 等生成产物
 - matplotlib 在 schemdraw 渲染中使用 `Agg` 非交互后端
 - 8 种电路拓扑类型：series_resistors, parallel_resistors, resistor_divider, rc_series, rc_parallel, rl_series, rlc_series, two_mesh
+- 元件值使用 E12 标准序列随机化（见 `datagen/circuit_templates.py`）
+- **提交前检查**：测试全部通过后，先 `git diff` 确认改动内容无误，再 commit 并 push 到 GitHub

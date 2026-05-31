@@ -7,7 +7,9 @@ import pytest
 
 from voltsnap.recognition.annotation_converter import AnnotationConverter, COMPONENT_CLASSES
 from voltsnap.recognition.ocr_parser import OCRParser, standardize_value
+from voltsnap.recognition.pipeline import RecognitionPipeline
 from voltsnap.recognition.text_binding import TextBinder
+from voltsnap.models import ComponentInfo, PinInfo
 
 
 # ── 标注转换器测试 ────────────────────────────────────────────────────
@@ -55,6 +57,65 @@ class TestAnnotationConverter:
         type_to_class = {d.class_id for d in detections}
         assert COMPONENT_CLASSES["resistor"] in type_to_class
         assert COMPONENT_CLASSES["voltage_source"] in type_to_class
+
+    def test_diode_class_id(self):
+        assert COMPONENT_CLASSES["diode"] == 5
+
+    def test_op_amp_class_id(self):
+        assert COMPONENT_CLASSES["op_amp"] == 6
+
+    def test_new_component_class_ids(self):
+        """新增元件类型在 COMPONENT_CLASSES 中有定义"""
+        assert COMPONENT_CLASSES["ground"] == 7
+        assert COMPONENT_CLASSES["switch"] == 8
+        assert COMPONENT_CLASSES["led"] == 9
+        assert COMPONENT_CLASSES["npn_transistor"] == 10
+        assert COMPONENT_CLASSES["pnp_transistor"] == 11
+        assert COMPONENT_CLASSES["nmos"] == 12
+        assert COMPONENT_CLASSES["pmos"] == 13
+
+    def test_convert_diode_annotation(self):
+        """二极管标注转换：2 引脚生成有效 OBB"""
+        annotation = {
+            "sample_id": "diode_001",
+            "image_size": [640, 480],
+            "components": [
+                {"ref": "V1", "type": "voltage_source", "value": "5"},
+                {"ref": "D1", "type": "diode", "value": "D"},
+            ],
+            "pin_positions": {
+                "V1_pin1": [100, 50],
+                "V1_pin2": [100, 200],
+                "D1_anode": [200, 200],
+                "D1_cathode": [350, 200],
+            },
+        }
+        converter = AnnotationConverter()
+        detections = converter.convert_sample(annotation)
+        assert len(detections) == 2
+        diode_det = [d for d in detections if d.class_id == COMPONENT_CLASSES["diode"]]
+        assert len(diode_det) == 1
+        assert 0 <= diode_det[0].cx <= 1
+        assert 0 <= diode_det[0].cy <= 1
+
+    def test_convert_op_amp_annotation(self):
+        """运放标注转换：使用前两个引脚生成 OBB"""
+        annotation = {
+            "sample_id": "opamp_001",
+            "image_size": [640, 480],
+            "components": [
+                {"ref": "U1", "type": "op_amp", "value": "OP"},
+            ],
+            "pin_positions": {
+                "U1_in+": [200, 150],
+                "U1_in-": [200, 250],
+                "U1_out": [400, 200],
+            },
+        }
+        converter = AnnotationConverter()
+        detections = converter.convert_sample(annotation)
+        assert len(detections) == 1
+        assert detections[0].class_id == COMPONENT_CLASSES["op_amp"]
 
     def test_yolo_obb_line_format(self, sample_annotation):
         converter = AnnotationConverter()
@@ -136,6 +197,51 @@ class TestOCRParser:
 
     def test_standardize_mega(self):
         assert standardize_value("1MΩ") == "1meg"
+
+    def test_parse_ref_ground(self):
+        parser = OCRParser()
+        results = parser.parse([
+            {"text": "G1", "bbox": [0, 0, 50, 20], "confidence": 0.9},
+        ])
+        assert len(results) == 1
+        assert results[0].is_ref
+        assert results[0].component_type == "ground"
+
+    def test_parse_ref_switch(self):
+        parser = OCRParser()
+        results = parser.parse([
+            {"text": "S1", "bbox": [0, 0, 50, 20], "confidence": 0.9},
+        ])
+        assert len(results) == 1
+        assert results[0].is_ref
+        assert results[0].component_type == "switch"
+
+    def test_parse_ref_led(self):
+        parser = OCRParser()
+        results = parser.parse([
+            {"text": "LED1", "bbox": [0, 0, 50, 20], "confidence": 0.9},
+        ])
+        assert len(results) == 1
+        assert results[0].is_ref
+        assert results[0].component_type == "led"
+
+    def test_parse_ref_npn(self):
+        parser = OCRParser()
+        results = parser.parse([
+            {"text": "Q1", "bbox": [0, 0, 50, 20], "confidence": 0.9},
+        ])
+        assert len(results) == 1
+        assert results[0].is_ref
+        assert results[0].component_type == "npn_transistor"
+
+    def test_parse_ref_nmos(self):
+        parser = OCRParser()
+        results = parser.parse([
+            {"text": "M1", "bbox": [0, 0, 50, 20], "confidence": 0.9},
+        ])
+        assert len(results) == 1
+        assert results[0].is_ref
+        assert results[0].component_type == "nmos"
 
 
 # ── 文字绑定测试 ──────────────────────────────────────────────────────
@@ -257,3 +363,305 @@ class TestRecognitionIntegration:
         # 至少有一个成功绑定了编号
         has_ref = any(b.ref for b in bound)
         assert has_ref
+
+
+# ── RecognitionPipeline 网表生成测试 ─────────────────────────────────
+
+
+class TestComponentsToSpice:
+    """RecognitionPipeline._components_to_spice 测试"""
+
+    def test_diode_netlist_includes_model(self):
+        """二极管网表应包含 .model DMOD D"""
+        components = [
+            ComponentInfo(
+                ref="V1", type="voltage_source", value="5",
+                pins=[
+                    PinInfo(name="V1_pin1", component_ref="V1", position=(0, 0)),
+                    PinInfo(name="V1_pin2", component_ref="V1", position=(0, 0)),
+                ],
+            ),
+            ComponentInfo(
+                ref="D1", type="diode", value="D",
+                pins=[
+                    PinInfo(name="D1_anode", component_ref="D1", position=(0, 0)),
+                    PinInfo(name="D1_cathode", component_ref="D1", position=(0, 0)),
+                ],
+            ),
+            ComponentInfo(
+                ref="R1", type="resistor", value="1k",
+                pins=[
+                    PinInfo(name="R1_pin1", component_ref="R1", position=(0, 0)),
+                    PinInfo(name="R1_pin2", component_ref="R1", position=(0, 0)),
+                ],
+            ),
+        ]
+        pin_to_net = {
+            "V1_pin1": 1, "V1_pin2": 2,
+            "D1_anode": 1, "D1_cathode": 3,
+            "R1_pin1": 3, "R1_pin2": 2,
+        }
+        netlist = RecognitionPipeline._components_to_spice(components, pin_to_net)
+        assert ".model DMOD D" in netlist
+        assert "D1" in netlist
+        assert "DMOD" in netlist
+
+    def test_op_amp_netlist_includes_subcircuit(self):
+        """运放网表应包含 .subckt OPAMP 定义"""
+        components = [
+            ComponentInfo(
+                ref="V1", type="voltage_source", value="1",
+                pins=[
+                    PinInfo(name="V1_pin1", component_ref="V1", position=(0, 0)),
+                    PinInfo(name="V1_pin2", component_ref="V1", position=(0, 0)),
+                ],
+            ),
+            ComponentInfo(
+                ref="R1", type="resistor", value="10k",
+                pins=[
+                    PinInfo(name="R1_pin1", component_ref="R1", position=(0, 0)),
+                    PinInfo(name="R1_pin2", component_ref="R1", position=(0, 0)),
+                ],
+            ),
+            ComponentInfo(
+                ref="U1", type="op_amp", value="OP",
+                pins=[
+                    PinInfo(name="U1_in+", component_ref="U1", position=(0, 0)),
+                    PinInfo(name="U1_in-", component_ref="U1", position=(0, 0)),
+                    PinInfo(name="U1_out", component_ref="U1", position=(0, 0)),
+                ],
+            ),
+        ]
+        pin_to_net = {
+            "V1_pin1": 1, "V1_pin2": 2,
+            "R1_pin1": 1, "R1_pin2": 3,
+            "U1_in+": 2, "U1_in-": 3, "U1_out": 4,
+        }
+        netlist = RecognitionPipeline._components_to_spice(components, pin_to_net)
+        assert ".subckt OPAMP in+ in- out" in netlist
+        assert ".ends OPAMP" in netlist
+        assert "XU1" in netlist
+        assert "OPAMP" in netlist
+
+    def test_diode_op_amp_no_exception(self):
+        """混合元件网表生成不抛异常"""
+        components = [
+            ComponentInfo(
+                ref="V1", type="voltage_source", value="5",
+                pins=[
+                    PinInfo(name="V1_pin1", component_ref="V1", position=(0, 0)),
+                    PinInfo(name="V1_pin2", component_ref="V1", position=(0, 0)),
+                ],
+            ),
+            ComponentInfo(
+                ref="D1", type="diode", value="D",
+                pins=[
+                    PinInfo(name="D1_anode", component_ref="D1", position=(0, 0)),
+                    PinInfo(name="D1_cathode", component_ref="D1", position=(0, 0)),
+                ],
+            ),
+            ComponentInfo(
+                ref="R1", type="resistor", value="1k",
+                pins=[
+                    PinInfo(name="R1_pin1", component_ref="R1", position=(0, 0)),
+                    PinInfo(name="R1_pin2", component_ref="R1", position=(0, 0)),
+                ],
+            ),
+            ComponentInfo(
+                ref="U1", type="op_amp", value="OP",
+                pins=[
+                    PinInfo(name="U1_in+", component_ref="U1", position=(0, 0)),
+                    PinInfo(name="U1_in-", component_ref="U1", position=(0, 0)),
+                    PinInfo(name="U1_out", component_ref="U1", position=(0, 0)),
+                ],
+            ),
+        ]
+        pin_to_net = {
+            "V1_pin1": 1, "V1_pin2": 2,
+            "D1_anode": 1, "D1_cathode": 3,
+            "R1_pin1": 3, "R1_pin2": 2,
+            "U1_in+": 2, "U1_in-": 3, "U1_out": 4,
+        }
+        netlist = RecognitionPipeline._components_to_spice(components, pin_to_net)
+        # 应同时包含二极管模型和运放子电路
+        assert ".model DMOD D" in netlist
+        assert ".subckt OPAMP" in netlist
+        assert ".ends OPAMP" in netlist
+
+    def test_only_resistor_no_model_defs(self):
+        """纯电阻网表不包含额外模型定义"""
+        components = [
+            ComponentInfo(
+                ref="R1", type="resistor", value="1k",
+                pins=[
+                    PinInfo(name="R1_pin1", component_ref="R1", position=(0, 0)),
+                    PinInfo(name="R1_pin2", component_ref="R1", position=(0, 0)),
+                ],
+            ),
+        ]
+        pin_to_net = {"R1_pin1": 1, "R1_pin2": 2}
+        netlist = RecognitionPipeline._components_to_spice(components, pin_to_net)
+        assert ".model" not in netlist
+        assert ".subckt" not in netlist
+
+    def test_led_netlist_includes_model(self):
+        """LED 网表应包含 LEDMOD 模型"""
+        components = [
+            ComponentInfo(
+                ref="V1", type="voltage_source", value="5",
+                pins=[
+                    PinInfo(name="V1_pin1", component_ref="V1", position=(0, 0)),
+                    PinInfo(name="V1_pin2", component_ref="V1", position=(0, 0)),
+                ],
+            ),
+            ComponentInfo(
+                ref="D1", type="led", value="LED",
+                pins=[
+                    PinInfo(name="D1_anode", component_ref="D1", position=(0, 0)),
+                    PinInfo(name="D1_cathode", component_ref="D1", position=(0, 0)),
+                ],
+            ),
+        ]
+        pin_to_net = {"V1_pin1": 1, "V1_pin2": 2, "D1_anode": 1, "D1_cathode": 3}
+        netlist = RecognitionPipeline._components_to_spice(components, pin_to_net)
+        assert "D1" in netlist
+        assert "LEDMOD" in netlist
+        assert ".model LEDMOD D" in netlist
+
+    def test_npn_transistor_netlist(self):
+        """NPN 三极管网表应包含 Q 前缀和 NPNMOD 模型"""
+        components = [
+            ComponentInfo(
+                ref="Q1", type="npn_transistor", value="NPN",
+                pins=[
+                    PinInfo(name="Q1_c", component_ref="Q1", position=(0, 0)),
+                    PinInfo(name="Q1_b", component_ref="Q1", position=(0, 0)),
+                    PinInfo(name="Q1_e", component_ref="Q1", position=(0, 0)),
+                ],
+            ),
+        ]
+        pin_to_net = {"Q1_c": 1, "Q1_b": 2, "Q1_e": 3}
+        netlist = RecognitionPipeline._components_to_spice(components, pin_to_net)
+        assert "Q1" in netlist
+        assert "NPNMOD" in netlist
+        assert ".model NPNMOD NPN" in netlist
+
+    def test_pnp_transistor_netlist(self):
+        """PNP 三极管网表应包含 PNPMOD 模型"""
+        components = [
+            ComponentInfo(
+                ref="Q2", type="pnp_transistor", value="PNP",
+                pins=[
+                    PinInfo(name="Q2_c", component_ref="Q2", position=(0, 0)),
+                    PinInfo(name="Q2_b", component_ref="Q2", position=(0, 0)),
+                    PinInfo(name="Q2_e", component_ref="Q2", position=(0, 0)),
+                ],
+            ),
+        ]
+        pin_to_net = {"Q2_c": 1, "Q2_b": 2, "Q2_e": 3}
+        netlist = RecognitionPipeline._components_to_spice(components, pin_to_net)
+        assert "Q2" in netlist
+        assert "PNPMOD" in netlist
+        assert ".model PNPMOD PNP" in netlist
+
+    def test_nmos_netlist(self):
+        """NMOS 网表应包含 M 前缀和 NMOSMOD 模型"""
+        components = [
+            ComponentInfo(
+                ref="M1", type="nmos", value="NMOS",
+                pins=[
+                    PinInfo(name="M1_d", component_ref="M1", position=(0, 0)),
+                    PinInfo(name="M1_g", component_ref="M1", position=(0, 0)),
+                    PinInfo(name="M1_s", component_ref="M1", position=(0, 0)),
+                ],
+            ),
+        ]
+        pin_to_net = {"M1_d": 1, "M1_g": 2, "M1_s": 3}
+        netlist = RecognitionPipeline._components_to_spice(components, pin_to_net)
+        assert "M1" in netlist
+        assert "NMOSMOD" in netlist
+        assert ".model NMOSMOD NMOS" in netlist
+
+    def test_pmos_netlist(self):
+        """PMOS 网表应包含 PMOSMOD 模型"""
+        components = [
+            ComponentInfo(
+                ref="M2", type="pmos", value="PMOS",
+                pins=[
+                    PinInfo(name="M2_d", component_ref="M2", position=(0, 0)),
+                    PinInfo(name="M2_g", component_ref="M2", position=(0, 0)),
+                    PinInfo(name="M2_s", component_ref="M2", position=(0, 0)),
+                ],
+            ),
+        ]
+        pin_to_net = {"M2_d": 1, "M2_g": 2, "M2_s": 3}
+        netlist = RecognitionPipeline._components_to_spice(components, pin_to_net)
+        assert "M2" in netlist
+        assert "PMOSMOD" in netlist
+        assert ".model PMOSMOD PMOS" in netlist
+
+    def test_ground_no_spice_line(self):
+        """接地符号不生成 SPICE 行"""
+        components = [
+            ComponentInfo(
+                ref="G1", type="ground", value="GND",
+                pins=[
+                    PinInfo(name="G1_pin1", component_ref="G1", position=(0, 0)),
+                    PinInfo(name="G1_pin2", component_ref="G1", position=(0, 0)),
+                ],
+            ),
+        ]
+        pin_to_net = {"G1_pin1": 1, "G1_pin2": 2}
+        netlist = RecognitionPipeline._components_to_spice(components, pin_to_net)
+        assert "G1" not in netlist
+
+    def test_switch_netlist(self):
+        """开关网表应包含 S 前缀和 SWMOD"""
+        components = [
+            ComponentInfo(
+                ref="S1", type="switch", value="SW",
+                pins=[
+                    PinInfo(name="S1_pin1", component_ref="S1", position=(0, 0)),
+                    PinInfo(name="S1_pin2", component_ref="S1", position=(0, 0)),
+                ],
+            ),
+        ]
+        pin_to_net = {"S1_pin1": 1, "S1_pin2": 2}
+        netlist = RecognitionPipeline._components_to_spice(components, pin_to_net)
+        assert "S1" in netlist
+        assert "SWMOD" in netlist
+
+    def test_new_types_no_exception(self):
+        """所有新类型混合网表不抛异常"""
+        components = [
+            ComponentInfo(ref="V1", type="voltage_source", value="5",
+                          pins=[PinInfo(name="V1_p1", component_ref="V1", position=(0, 0)),
+                                PinInfo(name="V1_p2", component_ref="V1", position=(0, 0))]),
+            ComponentInfo(ref="R1", type="resistor", value="1k",
+                          pins=[PinInfo(name="R1_p1", component_ref="R1", position=(0, 0)),
+                                PinInfo(name="R1_p2", component_ref="R1", position=(0, 0))]),
+            ComponentInfo(ref="D1", type="led", value="LED",
+                          pins=[PinInfo(name="D1_p1", component_ref="D1", position=(0, 0)),
+                                PinInfo(name="D1_p2", component_ref="D1", position=(0, 0))]),
+            ComponentInfo(ref="Q1", type="npn_transistor", value="NPN",
+                          pins=[PinInfo(name="Q1_c", component_ref="Q1", position=(0, 0)),
+                                PinInfo(name="Q1_b", component_ref="Q1", position=(0, 0)),
+                                PinInfo(name="Q1_e", component_ref="Q1", position=(0, 0))]),
+            ComponentInfo(ref="M1", type="nmos", value="NMOS",
+                          pins=[PinInfo(name="M1_d", component_ref="M1", position=(0, 0)),
+                                PinInfo(name="M1_g", component_ref="M1", position=(0, 0)),
+                                PinInfo(name="M1_s", component_ref="M1", position=(0, 0))]),
+            ComponentInfo(ref="S1", type="switch", value="SW",
+                          pins=[PinInfo(name="S1_p1", component_ref="S1", position=(0, 0)),
+                                PinInfo(name="S1_p2", component_ref="S1", position=(0, 0))]),
+        ]
+        pin_to_net = {
+            "V1_p1": 1, "V1_p2": 2, "R1_p1": 1, "R1_p2": 3,
+            "D1_p1": 1, "D1_p2": 4, "Q1_c": 3, "Q1_b": 2, "Q1_e": 5,
+            "M1_d": 4, "M1_g": 2, "M1_s": 5, "S1_p1": 3, "S1_p2": 5,
+        }
+        netlist = RecognitionPipeline._components_to_spice(components, pin_to_net)
+        assert "LEDMOD" in netlist
+        assert "NPNMOD" in netlist
+        assert "NMOSMOD" in netlist
+        assert "SWMOD" in netlist

@@ -1,7 +1,7 @@
 """电路面板 — 显示识别出的电路结构和可编辑参数"""
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex
+from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QGroupBox,
@@ -27,6 +27,15 @@ class ComponentTableModel(QAbstractTableModel):
         "inductor": "电感",
         "voltage_source": "电压源",
         "current_source": "电流源",
+        "diode": "二极管",
+        "op_amp": "运放",
+        "ground": "接地",
+        "switch": "开关",
+        "led": "发光二极管",
+        "npn_transistor": "NPN三极管",
+        "pnp_transistor": "PNP三极管",
+        "nmos": "NMOS",
+        "pmos": "PMOS",
     }
 
     def __init__(self):
@@ -113,6 +122,9 @@ class CircuitPanel(QWidget):
     显示识别出的元件列表，支持编辑编号和参数值。
     """
 
+    # 表格选中行时发射元件 ref（None 表示取消选中）
+    component_selected = pyqtSignal(object)  # str | None
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -143,6 +155,11 @@ class CircuitPanel(QWidget):
 
         layout.addWidget(group)
 
+        # 连接表格选择变化信号
+        self.table_view.selectionModel().selectionChanged.connect(
+            self._on_selection_changed
+        )
+
         # 统计信息
         self.stats_label = QLabel("未加载元件")
         self.stats_label.setStyleSheet("color: gray; padding: 4px;")
@@ -168,6 +185,10 @@ class CircuitPanel(QWidget):
     def load_components(self, components: list[dict]):
         """加载元件列表"""
         self.table_model.load_data(components)
+        # model reset 后重新连接选择信号
+        self.table_view.selectionModel().selectionChanged.connect(
+            self._on_selection_changed
+        )
         n = len(components)
         types = {}
         for c in components:
@@ -214,3 +235,24 @@ class CircuitPanel(QWidget):
         """重置为识别结果"""
         # 此方法由外部调用时传入原始数据
         pass
+
+    def select_component(self, ref: str | None):
+        """高亮指定元件行，传 None 取消选中"""
+        self.table_view.clearSelection()
+        if ref is None:
+            return
+        for row in range(self.table_model.rowCount()):
+            idx = self.table_model.index(row, 0)
+            if self.table_model.data(idx) == ref:
+                self.table_view.selectRow(row)
+                break
+
+    def _on_selection_changed(self, selected, deselected):
+        """表格选择变化时发射信号"""
+        indexes = self.table_view.selectionModel().selectedRows()
+        if indexes:
+            row = indexes[0].row()
+            ref = self.table_model.data(self.table_model.index(row, 0))
+            self.component_selected.emit(ref)
+        else:
+            self.component_selected.emit(None)

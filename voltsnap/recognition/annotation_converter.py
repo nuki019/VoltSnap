@@ -18,6 +18,15 @@ COMPONENT_CLASSES = {
     "inductor": 2,
     "voltage_source": 3,
     "current_source": 4,
+    "diode": 5,
+    "op_amp": 6,
+    "ground": 7,
+    "switch": 8,
+    "led": 9,
+    "npn_transistor": 10,
+    "pnp_transistor": 11,
+    "nmos": 12,
+    "pmos": 13,
 }
 
 

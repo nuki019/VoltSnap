@@ -40,6 +40,8 @@ class SchematicRenderer:
             "resistor_divider": self._draw_resistor_divider,
             "parallel_resistors": self._draw_parallel_resistors,
             "rc_circuit": self._draw_rc_circuit,
+            "diode_rectifier": self._draw_diode_rectifier,
+            "op_amp_inverting": self._draw_op_amp_inverting,
             # 随机拓扑（名称可能带编号后缀，用 startswith 匹配）
         }
 
@@ -58,6 +60,10 @@ class SchematicRenderer:
             elements = self._draw_rlc_series(d, circuit)
         elif circuit.name.startswith("two_mesh"):
             elements = self._draw_two_mesh(d, circuit)
+        elif circuit.name.startswith("diode_rectifier") or circuit.name.startswith("diode_series"):
+            elements = self._draw_diode_rectifier(d, circuit)
+        elif circuit.name.startswith("op_amp_inverting"):
+            elements = self._draw_op_amp_inverting(d, circuit)
         else:
             # 通用回退：按元件类型顺序绘制
             elements = self._draw_generic(d, circuit)
@@ -274,6 +280,56 @@ class SchematicRenderer:
         return [(v1, v1_elm), (resistors[0], r1_elm), (resistors[1], r2_elm),
                 (resistors[2], r3_elm), (resistors[3], r4_elm)]
 
+    def _draw_diode_rectifier(
+        self, d: schemdraw.Drawing, circuit: CircuitSpec
+    ) -> list[tuple[ComponentInfo, object]]:
+        """半波整流电路: V1 → D1 → R1 → GND"""
+        comps = {c.ref: c for c in circuit.components}
+        v1 = comps["V1"]
+        d1 = next(c for c in circuit.components if c.type == "diode")
+        r1 = next(c for c in circuit.components if c.type == "resistor")
+
+        v1_elm = d.add(elm.SourceV().label(f"V1\n{v1.value}V").down())
+        d1_elm = d.add(elm.Diode().right().label(f"{d1.ref}"))
+        r1_elm = d.add(elm.Resistor().label(f"{r1.ref}\n{r1.value}"))
+        d.add(elm.Ground())
+        d.add(elm.Line().left().tox(v1_elm.start).color("black"))
+
+        return [(v1, v1_elm), (d1, d1_elm), (r1, r1_elm)]
+
+    def _draw_op_amp_inverting(
+        self, d: schemdraw.Drawing, circuit: CircuitSpec
+    ) -> list[tuple[ComponentInfo, object]]:
+        """反相放大器: V1 → R1 → (-) U1 (+) → GND, Rf 反馈"""
+        comps = {c.ref: c for c in circuit.components}
+        v1 = comps["V1"]
+        r1 = next(c for c in circuit.components
+                   if c.type == "resistor" and c.ref == "R1")
+        rf = next(c for c in circuit.components
+                  if c.type == "resistor" and c.ref == "Rf")
+        u1 = next(c for c in circuit.components if c.type == "op_amp")
+
+        # 电压源
+        v1_elm = d.add(elm.SourceV().label(f"V1\n{v1.value}V").down())
+
+        # R1 从 V1 底部向右到运放反相输入
+        r1_elm = d.add(elm.Resistor().right().label(f"R1\n{r1.value}"))
+
+        # 运放：in2(反相) 接 R1 右端，in1(同相) 接 GND
+        op_elm = d.add(elm.Opamp().anchor("in2").label("U1", loc="center"))
+
+        # 同相输入端接地
+        d.add(elm.Ground().at(op_elm.in1))
+
+        # Rf 反馈：从运放输出到反相输入节点
+        rf_elm = d.add(elm.Resistor().at(op_elm.out).left().to(r1_elm.end).label(f"Rf\n{rf.value}", loc="bottom"))
+
+        # 闭合回路：从运放输出向右再向下接地，再回到 V1 负极
+        d.add(elm.Line().at(op_elm.out).right().length(1))
+        d.add(elm.Ground())
+
+        return [(v1, v1_elm), (r1, r1_elm), (rf, rf_elm), (u1, op_elm)]
+
     def _draw_generic(
         self, d: schemdraw.Drawing, circuit: CircuitSpec
     ) -> list[tuple[ComponentInfo, object]]:
@@ -292,14 +348,22 @@ class SchematicRenderer:
             "resistor": elm.Resistor,
             "capacitor": elm.Capacitor,
             "inductor": elm.Inductor,
+            "diode": elm.Diode,
         }
         label_suffix = {
             "resistor": "",
             "capacitor": "F",
             "inductor": "H",
+            "diode": "",
         }
 
+        has_op_amp = False
         for comp in others:
+            if comp.type == "op_amp":
+                op_elm = d.add(elm.Opamp().anchor("in2").label(comp.ref, loc="center"))
+                result.append((comp, op_elm))
+                has_op_amp = True
+                continue
             e_cls = elm_map.get(comp.type, elm.Resistor)
             suffix = label_suffix.get(comp.type, "")
             e = d.add(e_cls().right().label(f"{comp.ref}\n{comp.value}{suffix}"))
@@ -335,8 +399,6 @@ class SchematicRenderer:
         bbox = d.get_bbox()
 
         for comp, elm_obj in elements:
-            start = elm_obj.start
-            end = elm_obj.end
             center = elm_obj.center
 
             def to_pixel(pt):
@@ -350,8 +412,32 @@ class SchematicRenderer:
             except Exception:
                 comp.angle = 0.0
 
-            if len(comp.pins) >= 2:
-                comp.pins[0].position = (float(start[0]), float(start[1]))
-                comp.pins[0].pixel_position = to_pixel(start)
-                comp.pins[1].position = (float(end[0]), float(end[1]))
-                comp.pins[1].pixel_position = to_pixel(end)
+            # Opamp 等多引脚元件：通过 anchors 映射
+            if hasattr(elm_obj, 'anchors') and 'in1' in elm_obj.anchors:
+                anchor_map = {
+                    0: 'in1',   # 非反相输入
+                    1: 'in2',   # 反相输入
+                    2: 'out',   # 输出
+                }
+                for idx, anchor_name in anchor_map.items():
+                    if idx < len(comp.pins):
+                        pt = getattr(elm_obj, anchor_name)
+                        comp.pins[idx].position = (float(pt[0]), float(pt[1]))
+                        comp.pins[idx].pixel_position = to_pixel(pt)
+                # 用 in1 和 out 更新 bbox_center
+                try:
+                    in1_pt = elm_obj.in1
+                    out_pt = elm_obj.out
+                    mid = ((in1_pt[0] + out_pt[0]) / 2, (in1_pt[1] + out_pt[1]) / 2)
+                    comp.bbox_center = to_pixel(mid)
+                except Exception:
+                    pass
+            else:
+                # 二端元件：start/end
+                start = elm_obj.start
+                end = elm_obj.end
+                if len(comp.pins) >= 2:
+                    comp.pins[0].position = (float(start[0]), float(start[1]))
+                    comp.pins[0].pixel_position = to_pixel(start)
+                    comp.pins[1].position = (float(end[0]), float(end[1]))
+                    comp.pins[1].pixel_position = to_pixel(end)

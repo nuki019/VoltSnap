@@ -148,6 +148,11 @@ class DatasetSplitter:
             n_train = int(n * train_ratio)
             n_val = int(n * val_ratio)
 
+            # 小数据集稳定性：确保每拓扑至少 1 个样本进入 train
+            if n >= 1 and n_train < 1:
+                n_train = 1
+            n_val = min(n_val, n - n_train)
+
             splits["train"].extend(s["sample_id"] for s in samples[:n_train])
             splits["val"].extend(s["sample_id"] for s in samples[n_train:n_train + n_val])
             splits["test"].extend(s["sample_id"] for s in samples[n_train + n_val:])

@@ -63,6 +63,8 @@ class TestDegradationPipeline:
         config = DegradationConfig(
             p_blur=0.0, p_noise=0.0, p_contrast=0.0,
             p_downscale=0.0, p_jpeg=0.0, p_affine=0.0,
+            p_paper_texture=0.0, p_uneven_light=0.0,
+            p_moire=0.0, p_shadow=0.0,
         )
         pipeline = DegradationPipeline(config=config, seed=42)
         result = pipeline.apply(sample_image)
@@ -79,6 +81,51 @@ class TestDegradationPipeline:
     def test_single_degradation_contrast(self, sample_image):
         result = apply_single_degradation(sample_image, "contrast", seed=42)
         assert result.shape == sample_image.shape
+
+    # ── 新增退化类型专项测试 ──────────────────────────────────────────
+
+    def _mse(self, a: np.ndarray, b: np.ndarray) -> float:
+        return float(np.mean((a.astype(np.float32) - b.astype(np.float32)) ** 2))
+
+    @pytest.mark.parametrize("kind", [
+        "paper_texture", "uneven_light", "moire", "shadow",
+    ])
+    def test_new_degradation_preserves_shape_and_dtype(self, sample_image, kind):
+        """新退化类型保持 shape 和 uint8 dtype"""
+        result = apply_single_degradation(sample_image, kind, seed=42)
+        assert result.shape == sample_image.shape
+        assert result.dtype == np.uint8
+
+    @pytest.mark.parametrize("kind", [
+        "paper_texture", "uneven_light", "moire", "shadow",
+    ])
+    def test_new_degradation_produces_change(self, sample_image, kind):
+        """新退化类型应产生可测量的图像变化（MSE > 1）"""
+        result = apply_single_degradation(sample_image, kind, seed=42)
+        assert self._mse(result, sample_image) > 1.0
+
+    def test_shadow_darkens_image(self, sample_image):
+        """阴影退化应使平均亮度下降"""
+        result = apply_single_degradation(sample_image, "shadow", seed=42)
+        assert result.mean() < sample_image.mean()
+
+    def test_moire_alters_pixel_distribution(self, sample_image):
+        """摩尔纹退化应改变像素值的标准差"""
+        result = apply_single_degradation(sample_image, "moire", seed=42)
+        # 摩尔纹叠加正弦波，像素分布应有变化
+        assert result.std() != sample_image.std()
+
+    def test_paper_texture_seed_deterministic(self, sample_image):
+        """纸张纹理退化种子可复现"""
+        r1 = apply_single_degradation(sample_image, "paper_texture", seed=77)
+        r2 = apply_single_degradation(sample_image, "paper_texture", seed=77)
+        np.testing.assert_array_equal(r1, r2)
+
+    def test_uneven_light_varies_direction(self, sample_image):
+        """不均匀光照不同种子产生不同渐变方向"""
+        r1 = apply_single_degradation(sample_image, "uneven_light", seed=1)
+        r2 = apply_single_degradation(sample_image, "uneven_light", seed=2)
+        assert not np.array_equal(r1, r2)
 
 
 # ── 批量生成器测试 ────────────────────────────────────────────────────

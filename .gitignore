@@ -37,6 +37,9 @@ runs/
 *.cir.tmp
 *.cir.out
 
+# Screenshots
+*.png
+
 # System
 .DS_Store
 Thumbs.db
